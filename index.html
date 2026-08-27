@@ -791,17 +791,19 @@
         let currentAutoMergeMaxLevel = 3; 
 
         function initGalleryData() {
-            let idCounter = 0;
-            for (let setName in gameCardSets) {
-                gameCardSets[setName].forEach(path => {
+            // 🌟 改成直接讀取 CARD_DATA 陣列
+            if (typeof CARD_DATA !== 'undefined') {
+                CARD_DATA.forEach(card => {
                     galleryData.push({
-                        id: 'card_' + idCounter++,
-                        set: setName,
-                        path: path,
-                        name: path.split('/').pop(),
+                        id: card.id,
+                        set: card.set,
+                        path: card.image,
+                        name: card.name,
                         unlocked: false
                     });
                 });
+            } else {
+                console.error("找不到 CARD_DATA！");
             }
         }
 
