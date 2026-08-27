@@ -1,0 +1,2454 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MAMAMOO 合成 GAME</title>
+    
+    <!-- Web App Manifest (Android/Chrome 專用) -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- iOS Safari 專屬設定 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MAMAMOO合成">
+    <link rel="apple-touch-icon" href="images/icon.jpg">
+
+    <!-- 讀取 Python 自動生成的圖鑑資料 -->
+    <script src="card_data.js"></script>
+
+    <!-- ⚡ Firebase 測試專案核心與模組引入 (含登入/登出切換) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+        // 💡 確保這裡有引入 signOut
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, limit, getDocs, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBg6gMTOzOfgsIjVWD12O1GZ81dVXuzC28",
+            authDomain: "handbook-game.firebaseapp.com",
+            projectId: "handbook-game",
+            storageBucket: "handbook-game.firebasestorage.app",
+            messagingSenderId: "977687837939",
+            appId: "1:977687837939:web:92061288fef9b5b2db0b86"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // 🚨 實時監聽全服維護狀態 (GM 一鍵開關)
+        const maintenanceDocRef = doc(db, "system", "status");
+        onSnapshot(maintenanceDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const screen = document.getElementById('maintenance-screen');
+                if (data.isMaintenance === true) {
+                    // 只要資料庫變成 true，瞬間鎖定全服玩家畫面！
+                    if (screen) screen.style.display = 'flex';
+                } else {
+                    // 變成 false 就自動解除
+                    if (screen) screen.style.display = 'none';
+                }
+            }
+        });
+
+        window.faAuth = auth;
+        window.faDb = db;
+
+        // ⚡ 1. 網頁開啟時，自動偵測是否已經登入過
+        onAuthStateChanged(auth, async (user) => {
+            const btn = document.getElementById('btn-google-login');
+            if (user) {
+                // 已登入：按鈕變成紅色登出樣式
+                if (btn) {
+                    btn.innerText = `☁️ 已登入: ${user.displayName} (點擊登出)`;
+                    btn.style.background = "linear-gradient(45deg, #e74c3c, #c0392b)";
+                }
+                logMsg(`💚 歡迎回來，${user.displayName}！自動同步中...`);
+                await loadCloudData(user.uid);
+            } else {
+                // 未登入：按鈕恢復原本的綠色登入樣式
+                if (btn) {
+                    btn.innerText = `☁️ Google 登入與同步`;
+                    btn.style.background = "linear-gradient(45deg, #4285F4, #34A853)";
+                }
+            }
+        });
+
+        // ☁️ 點擊登入/登出按鈕的邏輯
+        window.loginWithGoogleCloud = async () => {
+            // 【新增登出邏輯】如果已經登入過了，點擊就是觸發登出
+            if (auth.currentUser) {
+                if (confirm("⚠️ 確定要登出 Google 帳號嗎？\n\n登出後進度將只會保存在此設備，暫停雲端同步。")) {
+                    try {
+                        await signOut(auth);
+                        logMsg("👋 已成功登出雲端同步！");
+                    } catch (error) {
+                        console.error(error);
+                        logMsg("❌ 登出失敗！");
+                    }
+                }
+                return;
+            }
+            
+            // 未登入則執行登入
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error(error);
+                logMsg("❌ Google 登入失敗！");
+            }
+        };
+
+        let cloudSyncTimer = null;
+
+        window.triggerAutoCloudSave = function() {
+            const user = auth.currentUser;
+            if (!user) return; 
+
+            if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+            cloudSyncTimer = setTimeout(async () => {
+                try {
+                    const rawSaveStr = localStorage.getItem('mamamoo_save');
+                    const createTime = localStorage.getItem('player_created_at');
+                    
+                    // 🌟 這裡！把圖鑑也從 LocalStorage 抓出來！
+                    const galStr = localStorage.getItem('mamamoo_gallery') || "";
+                    
+                    const customName = localStorage.getItem('mamamoo_nickname') || user.displayName || "匿名木木";
+
+                    // 🏆 把圖鑑 (galleryData) 一起推上雲端！
+                    await setDoc(doc(db, "game_saves", user.uid), {
+                        saveData: rawSaveStr,
+                        galleryData: galStr,  // 👈 新增這行！
+                        playerCreatedAt: createTime,
+                        updatedAt: Date.now(),
+                        level: currentLevel,
+                        coins: coins,
+                        displayName: customName
+                    });
+                    console.log("☁️ 雲端自動同步成功 (包含圖鑑)");
+                } catch (e) {
+                    console.error("Auto cloud save failed", e);
+                }
+            }, 1500); 
+        };
+
+       async function loadCloudData(uid) {
+            try {
+                const docRef = doc(db, "game_saves", uid);
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.saveData) {
+                        localStorage.setItem('mamamoo_save', data.saveData);
+                    }
+                    
+                    // 🌟 這裡！把雲端的圖鑑拉下來，塞回 LocalStorage！
+                    if (data.galleryData) {
+                        localStorage.setItem('mamamoo_gallery', data.galleryData);
+                    }
+                    
+                    if (data.playerCreatedAt) {
+                        localStorage.setItem('player_created_at', data.playerCreatedAt);
+                    }
+                    if (data.displayName) {
+                        localStorage.setItem('mamamoo_nickname', data.displayName);
+                    }
+
+                    loadLocalData();
+                    updateShopUI();
+                    updateGalleryUI();
+                    updateBoard();
+                    logMsg("☁️ 成功從雲端同步遊戲與圖鑑進度！");
+                } else {
+                    window.triggerAutoCloudSave();
+                    logMsg("☁️ 已為您在雲端建立全新存檔！");
+                }
+            } catch (e) {
+                console.error("Cloud load failed", e);
+                logMsg("❌ 讀取雲端存檔失敗！");
+            }
+        }
+
+        // 🏆 排行榜與自訂暱稱邏輯
+        window.openLeaderboard = async function() {
+            // 1. 檢查是否登入
+            if (!auth.currentUser) {
+                alert("⚠️ 請先點擊右上角「⚙️ 設定」完成 Google 登入，才能查看或參與排行榜喔！");
+                return;
+            }
+
+            // 2. 檢查是否設定過暱稱
+            let nick = localStorage.getItem('mamamoo_nickname');
+            if (!nick) {
+                nick = prompt("請輸入你想在榜單上顯示的專屬暱稱：", auth.currentUser.displayName || "匿名木木");
+                if (nick && nick.trim() !== "") {
+                    localStorage.setItem('mamamoo_nickname', nick.trim());
+                    window.triggerAutoCloudSave(); // 立刻存檔，把新名字推上雲端
+                } else {
+                    return; // 玩家按取消就不打開排行榜
+                }
+            }
+
+            // 3. 打開彈窗並抓取資料
+            document.getElementById('leaderboard-modal').style.display = 'flex';
+            const listEl = document.getElementById('leaderboard-list');
+            listEl.innerHTML = '<div style="text-align:center; padding: 20px;">資料讀取中... ⏳</div>';
+            
+            try {
+                // 依據「等級(level)」由高到低，抓取前 10 名
+                const q = query(collection(db, "game_saves"), orderBy("level", "desc"), limit(10));
+                const querySnapshot = await getDocs(q);
+                
+                listEl.innerHTML = '';
+                let rank = 1;
+                querySnapshot.forEach((docSnap) => {
+                    const data = docSnap.data();
+                    let rankIcon = rank === 1 ? '🥇' : (rank === 2 ? '🥈' : (rank === 3 ? '🥉' : `<b style="color:#7f8c8d; font-size:1.1rem; width:25px; display:inline-block; text-align:center;">${rank}</b>`));
+                    
+                    // 如果是自己的帳號，背景亮顯
+                    const isMe = (docSnap.id === auth.currentUser.uid);
+                    const bgCol = isMe ? '#e8f8f5' : (rank % 2 === 0 ? '#fafafa' : '#fff');
+                    
+                    listEl.innerHTML += `
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 10px; border-bottom: 1px solid #eee; background: ${bgCol}; border-radius:4px;">
+                            <div style="flex:1; display:flex; align-items:center; gap:8px;">
+                                ${rankIcon} 
+                                <span style="font-weight:bold; color:#2c3e50; font-size:1.05rem;">
+                                    ${data.displayName || "匿名木木"} 
+                                    ${isMe ? '<span style="font-size:0.7rem; color:#1abc9c;">(你)</span>' : ''}
+                                </span>
+                            </div>
+                            <div style="text-align:right; font-size:0.9rem; color:#e74c3c; font-weight:bold;">
+                                Lv.${data.level || 1}
+                            </div>
+                        </div>
+                    `;
+                    rank++;
+                });
+                
+                if(rank === 1) listEl.innerHTML = '<div style="text-align:center; padding: 20px;">目前還沒有玩家資料喔！</div>';
+                
+            } catch (e) {
+                console.error(e);
+                listEl.innerHTML = '<div style="text-align:center; color:red; padding: 20px;">❌ 讀取失敗！請確認 Firestore 規則已設定。</div>';
+            }
+        };
+
+        window.closeLeaderboard = function() {
+            document.getElementById('leaderboard-modal').style.display = 'none';
+        };
+
+        // ✏️ 手動改名功能
+        window.changeNickname = function() {
+            if (!auth.currentUser) return;
+            
+            let oldNick = localStorage.getItem('mamamoo_nickname') || auth.currentUser.displayName || "匿名木木";
+            let newNick = prompt("✏️ 請輸入新的專屬暱稱：", oldNick);
+            
+            if (newNick && newNick.trim() !== "") {
+                localStorage.setItem('mamamoo_nickname', newNick.trim());
+                window.triggerAutoCloudSave(); // 立刻把新名字推上雲端
+                alert("✅ 暱稱已成功更新！(排行榜可能需要幾秒鐘才會刷新)");
+                window.openLeaderboard(); // 重新整理排行榜畫面
+            }
+        };
+        
+    </script>
+
+    <style>
+        :root {
+            --primary: #4caf50; 
+            --bg-color: #f0f8f1; 
+            --text-dark: #2c3e50;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #222; 
+            color: var(--text-dark);
+            margin: 0; padding: 0;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh;
+            height: 100dvh; 
+            overflow: hidden; 
+        }
+
+        /* 🚨 緊急維護全屏紅屏樣式 */
+        #maintenance-screen {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(192, 57, 43, 0.98);
+            z-index: 99999;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        
+        #app-container {
+            width: 100%; max-width: 430px; 
+            height: 100%; 
+            max-height: 900px;
+            background-color: var(--bg-color);
+            display: flex; flex-direction: column;
+            position: relative; overflow: hidden;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        
+        .top-bar {
+            background: white; padding: 10px 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex; justify-content: space-between; align-items: center;
+            z-index: 100;
+        }
+        .coin-area { font-size: 1.1rem; font-weight: bold; color: #f39c12; }
+        #log-area { font-size: 0.85rem; color: #e74c3c; font-weight: bold; flex: 1; text-align: center; margin: 0 10px;}
+
+        .btn-settings { background: none; border: none; font-size: 1.2rem; cursor: pointer; transition: transform 0.2s; padding: 0;}
+        .btn-settings:active { transform: rotate(90deg); }
+        .btn-help { background: white; color: var(--primary); border: 2px solid var(--primary); border-radius: 50%; width: 24px; height: 24px; font-size: 0.9rem; font-weight: bold; cursor: pointer; display: flex; justify-content: center; align-items: center; padding: 0;}
+
+        .main-content {
+            flex: 1; 
+            overflow-y: auto; 
+            -webkit-overflow-scrolling: touch; 
+            padding: 10px;
+            display: flex; 
+            justify-content: center; 
+            align-items: flex-start;
+            box-sizing: border-box;
+        }
+        .page { 
+            display: none; 
+            width: 100%; 
+            flex-direction: column; 
+            gap: 10px; 
+            padding-bottom: 40px; 
+        }
+        .page.active { display: flex; }
+
+        .bottom-nav {
+            background: #2c3e50; display: flex; padding: 5px 0;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.2); z-index: 100;
+        }
+        .nav-btn {
+            flex: 1; background: none; border: none; color: #bdc3c7;
+            font-size: 0.9rem; font-weight: bold; padding: 12px 5px; cursor: pointer;
+        }
+        .nav-btn.active { color: #2ecc71; border-bottom: 3px solid #2ecc71; }
+
+        .mission-panel { background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .mission-title { font-weight: bold; color: #d35400; font-size: 1rem; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-bottom: 5px;}
+        .task-list { display: flex; flex-direction: column; gap: 8px; }
+        .task-item {
+            display: flex; justify-content: space-between; align-items: center;
+            background: #fafafa; padding: 8px; border-radius: 8px; font-size: 0.9rem; border: 1px solid #eee;
+        }
+        .btn-submit {
+            background: #ccc; color: white; border: none; padding: 6px 14px; border-radius: 12px;
+            font-weight: bold; cursor: not-allowed; transition: 0.2s; white-space: nowrap;
+        }
+        .btn-submit.ready { background: var(--primary); cursor: pointer; box-shadow: 0 2px 0 #2e7d32; }
+        .btn-submit.ready:active { transform: translateY(2px); box-shadow: none; }
+        .task-done { color: var(--primary); font-weight: bold; font-size: 1.2rem; padding-right: 5px;}
+        
+        .board-container { width: 100%; position: relative; }
+        .board {
+            display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px;
+            background-color: var(--primary); padding: 3px; border-radius: 8px;
+            aspect-ratio: 1; 
+        }
+        
+        .cell {
+            background-color: rgba(255, 255, 255, 0.9); border-radius: 4px;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            cursor: grab; user-select: none; overflow: hidden; 
+            box-sizing: border-box; position: relative;
+        }
+        .cell:active { cursor: grabbing; }
+
+        .cell img { width: 85%; height: 85%; object-fit: contain; pointer-events: none; user-select: none; }
+
+        .badge-overlay {
+            position: absolute; bottom: 2px; right: 2px; background: rgba(0, 0, 0, 0.7); color: white;
+            font-size: 10px; font-weight: bold; padding: 2px 4px; border-radius: 4px; pointer-events: none;
+        }
+
+        .ghost {
+            position: absolute; pointer-events: none; opacity: 0.8; z-index: 9999;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3); transform: translate(-50%, -50%);
+        }
+
+        .falling-hwasa { position: absolute; z-index: 1000; transition: top 0.4s cubic-bezier(0.5, 0, 0.8, 0.4), left 0.4s linear; }
+
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            25% { transform: translate(-2px, 1px) rotate(-2deg); }
+            50% { transform: translate(2px, -1px) rotate(2deg); }
+            75% { transform: translate(-1px, 2px) rotate(-1deg); }
+        }
+
+        @keyframes popIn {
+            0% { transform: scale(0.5); opacity: 0; }
+            70% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        #trash-can {
+            margin-top: 10px; width: 100%; padding: 12px; font-size: 1rem;
+            font-weight: bold; background-color: #e74c3c; color: white;
+            border: 2px dashed #c0392b; border-radius: 8px; box-shadow: inset 0 0 8px rgba(0,0,0,0.2);
+            text-align: center; user-select: none; box-sizing: border-box;
+        }
+
+        .btn-spawn {
+            padding: 10px 4px; font-size: 0.85rem;
+            font-weight: bold; color: white; border: none; border-radius: 8px; 
+            user-select: none; -webkit-user-select: none; touch-action: none; cursor: pointer;
+        }
+        .btn-spawn:active { transform: translateY(2px); box-shadow: 0 0 0 !important; }
+
+        .modal-bg {
+            display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); z-index: 2000; justify-content: center; align-items: center;
+        }
+        .modal-container { background: white; padding: 15px; border-radius: 12px; width: 85%; max-height: 80%; overflow-y: auto; text-align: center; }
+        
+        .evo-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 15px; }
+        .evo-cell { aspect-ratio: 1; border-radius: 6px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 11px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative;}
+        .evo-cell img { width: 85%; height: 85%; object-fit: contain; }
+
+        .panel-box { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+        .btn-action { background: linear-gradient(45deg, #f1c40f, #f39c12); border: none; color: white; padding: 10px; width: 100%; font-size: 1rem; font-weight: bold; border-radius: 8px; margin-top: 8px; cursor: pointer; }
+        .btn-open { background: linear-gradient(45deg, #9b59b6, #8e44ad); }
+        .btn-special { background: linear-gradient(45deg, #ff4757, #ff6b81); }
+        .pack-inventory { font-size: 1rem; font-weight: bold; margin: 8px 0; color: #2c3e50; }
+        
+        #result-display { margin-top: 10px; min-height: 80px; max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 0.9rem; font-weight: bold; color: #e74c3c; border: 2px dashed #ccc; border-radius: 8px; background: #fafafa; padding: 10px;}
+        
+        .gallery-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 10px; }
+        .gallery-card { background: #eee; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 10px; color: #888; border-radius: 6px; text-align: center; padding: 2px; overflow: hidden; word-wrap: break-word;}
+        .gallery-card img { width: 90%; height: 90%; object-fit: contain; }
+        .gallery-card.unlocked { background: #4caf50; color: white; font-weight: bold; border: 2px solid #2e7d32; }
+
+        .tears-bar-container { width: 100%; background-color: #eee; border-radius: 10px; margin-top: 10px; overflow: hidden; border: 1px solid #ccc;}
+        .tears-bar { height: 15px; background-color: #3498db; width: 0%; transition: width 0.3s; }
+        
+        .set-title { font-weight: bold; margin-top: 15px; text-align: left; color: #2c3e50; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+
+        #transfer-code-input {
+            width: 100%; height: 100px; margin: 10px 0; padding: 10px; box-sizing: border-box; 
+            resize: none; font-size: 0.8rem; border-radius: 6px; border: 1px solid #ccc; font-family: monospace;
+        }
+
+        .help-content { color: var(--text-dark); text-align: left; line-height: 1.5; font-size: 0.95rem;}
+        .help-content p { margin: 10px 0; }
+        .help-content b { font-size: 1.05rem; display: block; margin-top: 12px; color: #2e7d32; }
+    </style>
+</head>
+<body>
+
+ <!-- 🚨 全服緊急維護紅屏畫面 (只要把下方開關打開就會顯示) -->
+    <div id="maintenance-screen">
+        <h1 style="font-size: 2.2rem; margin-bottom: 15px;">🚨 緊急維護中 🚨</h1>
+        <p style="font-size: 1.1rem; line-height: 1.6; max-width: 380px;">
+            伺服器發生異常，請不要進行動作。<br>正在緊急修復中，造成不便敬請見諒！
+        </p>
+    </div>
+
+<div id="app-container">
+    <div class="top-bar">
+        <div class="coin-area">💰 <span id="coins">0</span></div>
+        <div id="log-area">MAMAMOO 宿舍開啟！</div>
+        
+        <div style="display: flex; gap: 8px; align-items: center;">
+            <button class="btn-settings" onclick="openLeaderboard()" style="font-size: 1.3rem;">🏆</button>
+            <button id="btn-help-global" class="btn-help" onclick="openHelp()">❓</button>
+            <button class="btn-settings" onclick="openSettings()">⚙️</button>
+        </div>
+    </div>
+
+    <div class="main-content">
+        
+        <!-- 分頁 1：合成區 -->
+        <div id="page-merge" class="page active">
+            <div class="mission-panel">
+                <div class="mission-title">Lv.<span id="level-num">1</span> 任務</div>
+                <div class="task-list" id="task-list"></div>
+            </div>
+            
+            <div class="board-container">
+                <div class="board" id="game-board"></div>
+            </div>
+            
+            <!-- 垃圾桶與紀念冊按鈕 -->
+            <div style="display: flex; gap: 8px; margin-top: 10px; width: 100%;">
+                <div id="trash-can" style="flex: 1; margin-top: 0;">🗑️ 拖曳至此出售</div>
+                <div id="btn-memorial" style="width: 55px; font-size: 1.5rem; display: flex; justify-content: center; align-items: center; background-color: #9b59b6; color: white; border: 2px dashed #8e44ad; border-radius: 8px; box-shadow: inset 0 0 8px rgba(0,0,0,0.2); cursor: pointer;" onclick="openMemorialBook()">📖</div>
+            </div>
+
+            <!-- 📖 紀念冊內部彈窗 -->
+            <div id="memorial-modal" class="modal-bg" style="z-index: 4000; flex-direction: column;" onclick="closeMemorialBook()">
+                <div class="modal-container" style="background: var(--bg-color); position: relative; width: 95%; max-width: 430px; padding: 20px 10px;" onclick="event.stopPropagation()">
+                    <div style="position: absolute; top: 10px; right: 15px; font-size: 1.8rem; cursor: pointer; color: #e74c3c; font-weight: bold;" onclick="closeMemorialBook()">✖</div>
+                    <h3 style="margin: 0 0 5px 0; color: #8e44ad; text-align: center;">📖 紀念冊</h3>
+                    <p style="font-size: 0.8rem; color: #555; text-align: center; margin-top: 0; margin-bottom: 10px;">(拖曳交換位置 / 點擊永久刪除)</p>
+                    <div class="board-container">
+                        <div class="board" id="memorial-board" style="background-color: #8e44ad;"></div>
+                    </div>
+                </div>
+            </div>
+                    
+            <!-- 下方按鈕區塊 (左右兩大區塊) -->
+            <div style="display: flex; gap: 6px; margin-top: 10px; width: 100%; align-items: flex-start;">
+                
+                <!-- 左邊：一鍵整理 -->
+                <button class="btn-spawn" style="flex: 1; background-color: #3498db; box-shadow: 0 3px 0 #2980b9;" onclick="sortBoard()">一鍵整理</button>
+                
+                <!-- 中間：一鍵合成與目標等級 -->
+                <div style="flex: 1.2; display: flex; flex-direction: column; gap: 3px;">
+                    <button class="btn-spawn" id="btn-auto-merge" style="width: 100%; background-color: #95a5a6; box-shadow: 0 3px 0 #7f8c8d;" onclick="handleAutoMergeAction()">一鍵合成</button>
+                    <div id="auto-merge-level-control" style="display: none; justify-content: space-between; align-items: center; background: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; border: 1px solid #ccc;">
+                        <span style="color:#555;">目標: <span id="target-merge-lvl">3</span></span>
+                        <div style="display: flex; gap: 4px;">
+                            <button onclick="adjustAutoMergeLevel(-1)" style="background:#e74c3c; color:white; border:none; width:18px; height:18px; border-radius:3px; cursor:pointer; font-weight:bold;">-</button>
+                            <button onclick="adjustAutoMergeLevel(1)" style="background:#2ecc71; color:white; border:none; width:18px; height:18px; border-radius:3px; cursor:pointer; font-weight:bold;">+</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右邊：【長按召喚 + 高級召喚開關】打包成一組直行 -->
+                <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+                    <button class="btn-spawn" id="btn-spawn" style="width: 100%; background-color: var(--primary); box-shadow: 0 3px 0 #2e7d32;">長按召喚</button>
+                    
+                    <!-- 🌟 乖乖待在長按召喚正下方的開關 -->
+                    <div id="advanced-spawn-container" style="display: none; justify-content: space-between; align-items: center; background: #fff; padding: 4px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; border: 1px solid #ccc; box-sizing: border-box;">
+                        <span style="color: #2c3e50;">✨ 高級召喚</span>
+                        <input type="checkbox" id="advanced-spawn-toggle" style="width: 14px; height: 14px; cursor: pointer;">
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- 分頁 2：商店 -->
+        <div id="page-shop" class="page">
+            <div class="panel-box">
+                <h2>🛒 盲盒商店</h2>
+                <button class="btn-action" onclick="buyPack(5000, 'small')">買【小卡包】(10張 / 5000 💰)</button>
+                <button class="btn-action" onclick="buyPack(8000, 'large')">買【大卡包】(20張 / 8000 💰)</button>
+                <button class="btn-action btn-special" onclick="buyPack(10000, 'surprise')">買【驚喜卡包】(3張 / 10000 💰)</button>
+            </div>
+        </div>
+
+        <!-- 分頁 3：拆卡 -->
+        <div id="page-open" class="page">
+            <div class="panel-box">
+                <h2>✨ 拆卡區</h2>
+                <div class="pack-inventory">📦 小卡包：<span id="inv-small" style="color:#e74c3c;">0</span> 包</div>
+                <button class="btn-action btn-open" onclick="openPack('small')">撕開【小卡包】</button>
+                <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
+                
+                <div class="pack-inventory">📦 大卡包：<span id="inv-large" style="color:#e74c3c;">0</span> 包</div>
+                <button class="btn-action btn-open" onclick="openPack('large')">撕開【大卡包】</button>
+                <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
+
+                <div class="pack-inventory">🎁 驚喜卡包：<span id="inv-surprise" style="color:#e74c3c;">0</span> 包</div>
+                <button class="btn-action btn-special" onclick="openPack('surprise')">撕開【驚喜卡包】</button>
+                
+                <div style="margin-top: 15px; font-size: 0.9rem; font-weight: bold;">💧 木木的眼淚 (<span id="tears-count">0</span>/30)</div>
+                <div class="tears-bar-container" onclick="triggerTearsEgg()"><div class="tears-bar" id="tears-bar"></div></div>
+            </div>
+            <div id="result-display">等待拆卡...</div>
+        </div>
+
+        <!-- 分頁 4：圖鑑 -->
+        <div id="page-gallery" class="page">
+            <div class="panel-box">
+                <h2>📚 收集度 (<span id="gallery-unlocked">0</span>/<span id="gallery-total">0</span>)</h2>
+                <div style="margin-bottom: 15px; font-weight: bold; color: #e74c3c;">
+                    🃏 擁有的自選卡：<span id="choice-cards">0</span> 張
+                    <button class="btn-action" style="padding: 5px; font-size: 0.9rem; margin-top: 5px;" onclick="useChoiceCard()">使用自選卡</button>
+                </div>
+                <div id="gallery-container"></div>
+            </div>
+        </div>
+    </div>
+
+     <!-- 導航 -->
+    <div class="bottom-nav">
+        <button class="nav-btn active" onclick="switchTab('merge', this)">🧩 合成</button>
+        <button class="nav-btn" onclick="switchTab('shop', this)">🛒 商店</button>
+        <button class="nav-btn" onclick="switchTab('open', this)">✨ 拆卡</button>
+        <button class="nav-btn" onclick="switchTab('gallery', this)">📚 圖鑑</button>
+    </div>
+
+    <div id="evo-modal" class="modal-bg" onclick="closeModal()">
+        <div class="modal-container" id="modal-content" onclick="event.stopPropagation()">
+            <h3 id="modal-title" style="margin:0; color:#2c3e50;"></h3>
+            <p id="modal-desc" style="font-size:0.8rem; color:#888; margin:5px 0;">點擊外面關閉</p>
+            <div class="evo-grid" id="modal-grid"></div>
+        </div>
+    </div>
+
+     <!-- ⚙️ 設定選單 -->
+    <div id="settings-modal" class="modal-bg" onclick="closeSettings()">
+        <div class="modal-container" onclick="event.stopPropagation()">
+            <div id="settings-menu">
+                <h3 style="margin:0 0 15px 0; color:#2c3e50;">⚙️ 設定</h3>
+                <!-- ⚡ 按鈕 ID 在這，會隨狀態變更顏色與文字 -->
+                <button id="btn-google-login" class="btn-action" style="background: linear-gradient(45deg, #4285F4, #34A853);" onclick="window.loginWithGoogleCloud()">☁️ Google 登入與同步</button>
+                <button class="btn-action" onclick="showTransferMenu()">🔄 進度轉移 (引繼碼)</button>
+                <button class="btn-action" style="background: linear-gradient(45deg, #00acc1, #00bcd4);" onclick="showUpdateLog()">📜 版本更新日誌</button>
+                <button class="btn-action btn-special" onclick="showCredits()">📝 Credits</button>
+                <hr style="border:0; border-top:1px solid #eee; margin:15px 0;">
+                <button class="btn-action" style="background:#95a5a6; padding:8px;" onclick="closeSettings()">關閉</button>
+            </div>
+            
+            <div id="settings-transfer" style="display:none;">
+                <h3 style="margin:0; color:#2c3e50;">🔄 進度轉移</h3>
+                <p style="font-size:0.8rem; color:#888; margin:5px 0;">本遊戲會自動儲存於瀏覽器內。<br>若要更換設備，請在此複製引繼碼。</p>
+                <textarea id="transfer-code-input" placeholder="若要讀取舊進度，請在此貼上引繼碼..."></textarea>
+                <button class="btn-action btn-open" onclick="generateTransferCode()">📤 產生引繼碼 (匯出進度)</button>
+                <button class="btn-action btn-special" onclick="applyTransferCode()">📥 讀取引繼碼 (匯入進度)</button>
+                <button class="btn-action" style="background:#95a5a6; padding:8px; margin-top:15px;" onclick="backToSettings()">返回</button>
+            </div>
+
+            <div id="settings-update-log" style="display:none; text-align:left;">
+                <h3 style="margin:0 0 10px 0; color:#2c3e50; text-align:center;">📜 更新日誌</h3>
+                <div style="max-height:50vh; overflow-y:auto; padding: 0 5px;">
+                    
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260823')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.23 20:00 
+                        </button>
+                        <div id="log-20260823" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增彩蛋—本彩蛋為有聲彩蛋，請注意手機音量。 (彩蛋提示:引繼碼)
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260824')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.24 12:20 
+                        </button>
+                        <div id="log-20260824" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增一鍵合成功能與補償發放系統。
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260824_2')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.24 20:00 
+                        </button>
+                        <div id="log-20260824_2" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增Google登入/雲端同步功能。
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260824_3')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.24 21:00 
+                        </button>
+                        <div id="log-20260824_3" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增彩蛋—本彩蛋為有聲彩蛋，請注意手機音量。 (彩蛋提示:連續點擊5次)
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260825')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.25 22:00 
+                        </button>
+                        <div id="log-20260825" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增排行榜。
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260826')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.26 16:00 
+                        </button>
+                        <div id="log-20260826" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增紀念冊。
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260827')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.08.27 14:50
+                        </button>
+                        <div id="log-20260827" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增彩蛋 (彩蛋提示:連續點擊5次)
+                        </div>
+                    </div>
+                    
+                </div>
+                <button class="btn-action" style="background:#95a5a6; padding:8px; margin-top:15px;" onclick="backToSettings()">返回</button>
+            </div>
+
+            <div id="settings-credits" style="display:none; text-align:left;">
+                <h3 style="margin:0 0 10px 0; color:#2c3e50; text-align:center;">📝 Credits</h3>
+                <div style="font-size:0.85rem; color:#555; max-height:50vh; overflow-y:auto; line-height:1.4; padding: 0 5px;">
+                    <p style="margin-top:0;"><b>作者碎碎念:</b><br>其實就是想玩圖鑑蒐集遊戲但是找不到喜歡的所以想說自己搞吧。一開始還很笨想說每個人放五六百張的話那我乾脆手動抓，還好我有先去查。Gallery-dl真的是個好東西，推薦大家使用，八千多張照片幾十分鐘就自動下載好了。但篩選我真的不知道Python能不能，我覺得不行，所以就手動挑了。結果很崩潰啊，安黑金小姐太多背對的照片了；丁輝妮放的全是勾某，很怕她們兩個照片不夠。合照的部分也是手動查重的，有重複敬請見諒。<br><br> 如果你非常好心的想提供我建議，可以私訊moomoo_sh3d的threads.</p>
+                    <p><b>credits</b><br>槓龜圖：ETtoday<br>圖鑑圖片：<br>solarkeem<br>mo_onbyul<br>whee_inthemood<br>_mariahwasa</p>
+                    <p><b>特別感謝</b><br>Gallery-dl<br>Gemini</p>
+                    <p style="line-height: 1.8;">
+                        <b>聯絡我:</b><br>
+                        IG / Threads : moomoo_sh3d<br>
+                        Gmail : smallcat.07.08@gmail.com 
+                        <button onclick="copyContactText('smallcat.07.08@gmail.com')" style="background:#3498db; color:white; border:none; border-radius:4px; padding:3px 8px; font-size:0.75rem; cursor:pointer; margin-left:5px; box-shadow:0 2px 0 #2980b9; font-weight:bold;">複製</button>
+                    </p>
+                </div>
+                <button class="btn-action" style="background:#95a5a6; padding:8px; margin-top:15px;" onclick="backToSettings()">返回</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 📖 遊戲說明書彈窗 -->
+    <div id="help-modal" class="modal-bg" style="z-index: 3000;" onclick="closeHelp()">
+        <div class="modal-container" style="background: white;" onclick="event.stopPropagation()">
+            <h3 style="margin-top:0; color: #2e7d32; border-bottom: 2px solid #eee; padding-bottom: 10px;">遊戲說明</h3>
+            <div id="help-content-box" class="help-content" style="max-height: 60vh; overflow-y: auto;"></div>
+            <button class="btn-action" style="background: var(--primary); padding: 8px; margin-top: 15px;" onclick="closeHelp()">我知道了！</button>
+        </div>
+    </div>
+
+   <!-- 🏆 排行榜彈窗 -->
+    <div id="leaderboard-modal" class="modal-bg" style="z-index: 4500;" onclick="closeLeaderboard()">
+        <div class="modal-container" style="background: white; padding: 20px 15px;" onclick="event.stopPropagation()">
+            
+            <!-- 標題與改名按鈕並排 -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 10px;">
+                <h3 style="margin: 0; color: #f39c12;">🏆 排行榜 (Top 10)</h3>
+                <button onclick="changeNickname()" style="background: #3498db; color: white; border: none; padding: 5px 10px; border-radius: 5px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 0 #2980b9;">✏️ 改名</button>
+            </div>
+            
+            <div id="leaderboard-list" style="max-height: 50vh; overflow-y: auto; text-align: left; font-size: 0.95rem; line-height: 1.6; padding: 5px; margin-top: 10px;">
+                <!-- 排名列表將在此處生成 -->
+            </div>
+            
+            <button class="btn-action" style="background: #95a5a6; padding: 8px; margin-top: 15px;" onclick="closeLeaderboard()">關閉</button>
+        </div>
+    </div>
+    
+    <!-- ✨ 沈浸式抽卡彈窗 -->
+    <div id="reveal-modal" class="modal-bg" style="z-index: 4000; background: rgba(0,0,0,0.92); flex-direction: column;" onclick="nextReveal()">
+        <div style="position: absolute; top: 20px; right: 20px;">
+            <button onclick="skipReveal(event)" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 1rem; cursor: pointer;">跳過 >></button>
+        </div>
+        <div id="reveal-count" style="color: #ccc; font-weight: bold; font-size: 1.2rem; margin-bottom: 20px;">1 / 10</div>
+        <div id="reveal-card" style="text-align: center;"></div>
+        <div style="margin-top: 30px; font-size: 1rem; color: #aaa; animation: shake 2s infinite;">(點擊畫面翻開下一張)</div>
+    </div>
+
+    <!-- 🖼️ 圖鑑大圖檢視視窗 -->
+    <div id="image-modal" class="modal-bg" style="z-index: 5000; background: rgba(0,0,0,0.85);" onclick="closeImageModal()">
+        <img id="enlarged-img" src="" style="max-width: 90%; max-height: 85%; object-fit: contain; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);" onclick="event.stopPropagation()">
+        <div style="position: absolute; top: 15px; right: 20px; color: white; font-size: 2.5rem; font-weight: bold; cursor: pointer; text-shadow: 0 2px 4px rgba(0,0,0,0.5);">&times;</div>
+    </div>
+</div>
+
+    <script>
+
+        let totalMerges = 0; // 🌟 我偷偷幫你加的總合成次數
+        
+        let gameCardSets = {};
+        if (typeof cardSets !== 'undefined') {
+            gameCardSets = cardSets; 
+        } else {
+            gameCardSets = { "等待圖片載入中": [] };
+        }
+
+        let coins = 0;
+        let inventory = { small: 0, large: 0, surprise: 0 };
+        let tears = 0;
+        let choiceCards = 0;
+        let galleryData = []; 
+        let claimedSets = new Set(); 
+
+        const BOARD_SIZE = 64;
+        let board = new Array(BOARD_SIZE).fill(null);
+        const chars = [ { id: 'solar', name: '金容容' }, { id: 'moon', name: '文星星' }, { id: 'whee', name: '丁輝妮' }, { id: 'hwa', name: '黑金妮' } ];
+
+        let memorialBoard = new Array(BOARD_SIZE).fill(null); // 📖 紀念冊陣列
+
+        let currentLevel = 1;
+        let currentMissionData = null;
+        let hwasaTimerId = null;
+        let bossActive = false; 
+
+        // ⚡ 一鍵合成相關變數
+        let autoMergeEndTime = 0; 
+        let isPermanentAutoMerge = false; 
+        let currentAutoMergeMaxLevel = 3; 
+
+        function initGalleryData() {
+            let idCounter = 0;
+            for (let setName in gameCardSets) {
+                gameCardSets[setName].forEach(path => {
+                    galleryData.push({
+                        id: 'card_' + idCounter++,
+                        set: setName,
+                        path: path,
+                        name: path.split('/').pop(),
+                        unlocked: false
+                    });
+                });
+            }
+        }
+
+        function getCpImageName(char1, char2) {
+            const pair = [char1, char2].sort().join('_');
+            const cpMap = {
+                'moon_solar': 'moon_solar', 
+                'solar_whee': 'solar_whee', 
+                'hwa_solar': 'hwa_solar',    
+                'moon_whee': 'moon_whee',    
+                'hwa_moon': 'hwa_moon',      
+                'hwa_whee': 'hwa_whee'      
+            };
+            return cpMap[pair] || pair;
+        }
+
+        function switchTab(pageId, btn) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('page-' + pageId).classList.add('active');
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+
+            const helpBtn = document.getElementById('btn-help-global');
+            if (pageId === 'merge' || pageId === 'shop') {
+                helpBtn.style.display = 'flex';
+            } else {
+                helpBtn.style.display = 'none';
+            }
+        }
+        
+        function logMsg(msg) {
+            const el = document.getElementById('log-area');
+            el.innerText = msg; setTimeout(() => { el.innerText = 'MAMAMOO 宿舍'; }, 3000);
+        }
+
+        // --- ⚡ 一鍵合成控制邏輯 ---
+        function adjustAutoMergeLevel(amount) {
+            currentAutoMergeMaxLevel += amount;
+            if (currentAutoMergeMaxLevel < 1) currentAutoMergeMaxLevel = 1;
+            if (currentAutoMergeMaxLevel > 11) currentAutoMergeMaxLevel = 11;
+            document.getElementById('target-merge-lvl').innerText = currentAutoMergeMaxLevel;
+        }
+
+        function handleAutoMergeAction() {
+            let isReady = isPermanentAutoMerge || (Date.now() < autoMergeEndTime);
+
+            if (!isReady) {
+                let choice = confirm("【一鍵合成解鎖】\n\n[確定] 消耗 1 張 CP卡，解鎖 5 分鐘！\n[取消] 看是否要用「永久解鎖」（消耗 1 張完全體）");
+                
+                if (choice) {
+                    let cpIdx = board.findIndex(i => i && i.type === 'cp');
+                    if (cpIdx === -1) { logMsg("❌ 盤面上沒有 CP 卡可以消耗！"); return; }
+                    if (confirm("⚠️ 確定要消耗盤面上的一張 CP 卡來換取 5 分鐘一鍵合成嗎？")) {
+                        board[cpIdx] = null;
+                        autoMergeEndTime = Date.now() + 5 * 60 * 1000;
+                        logMsg("⚡ 成功解鎖 5 分鐘一鍵合成！");
+                        updateBoard();
+                    }
+                } else {
+                    let finalIdx = board.findIndex(i => i && i.type === 'final');
+                    if (finalIdx === -1) { logMsg("❌ 盤面上沒有【MAMAMOO 完全體】可以消耗！"); return; }
+                    if (confirm("⚠️🔥 警告！這將永久消耗盤面上的一張【完全體】來換取永恆的一鍵合成！確定嗎？")) {
+                        board[finalIdx] = null;
+                        isPermanentAutoMerge = true;
+                        logMsg("🎉 恭喜解鎖【永久一鍵合成】！");
+                        updateBoard();
+                    }
+                }
+            } else {
+                executeActiveAutoMerge();
+            }
+        }
+
+        function executeActiveAutoMerge() {
+            if (bossActive || board.some(i => i && i.type === 'hungry')) {
+                logMsg("🚨 特殊事件中無法使用一鍵合成！");
+                return;
+            }
+
+            let totalMergedCount = 0;
+            let loopSafety = 0;
+
+            while (loopSafety < 100) {
+                loopSafety++;
+                let didMergeInThisPass = false;
+
+                for (let i = 0; i < BOARD_SIZE; i++) {
+                    let itemA = board[i];
+                    if (!itemA || itemA.type !== 'member' || itemA.level > currentAutoMergeMaxLevel) continue;
+
+                    for (let j = i + 1; j < BOARD_SIZE; j++) {
+                        let itemB = board[j];
+                        if (itemB && itemB.type === 'member' && itemB.char === itemA.char && itemB.level === itemA.level && itemB.level <= 11) {
+                            board[j] = { type: 'member', char: itemB.char, level: itemB.level + 1 };
+                            board[i] = null;
+                            totalMergedCount++;
+                            didMergeInThisPass = true;
+                            break; 
+                        }
+                    }
+                    if (didMergeInThisPass) break; 
+                }
+
+                if (!didMergeInThisPass) break; 
+            }
+
+            if (totalMergedCount > 0) {
+                logMsg(`⚡ 一鍵合成發動！成功連鎖清理低階卡片！`);
+            } else {
+                logMsg(`⚠️ 盤面上沒有符合 Lv.${currentAutoMergeMaxLevel} 以下可合成的卡片！`);
+            }
+            updateBoard();
+        }
+
+        function updateAutoButtonUI() {
+            const btn = document.getElementById('btn-auto-merge');
+            const levelControl = document.getElementById('auto-merge-level-control');
+            if (!btn) return;
+
+            let isReady = isPermanentAutoMerge || (Date.now() < autoMergeEndTime);
+
+            if (isPermanentAutoMerge) {
+                btn.style.backgroundColor = '#27ae60';
+                btn.style.boxShadow = '0 3px 0 #1e8449';
+                btn.innerText = '一鍵合成 (永久)';
+                levelControl.style.display = 'flex';
+            } else if (Date.now() < autoMergeEndTime) {
+                let leftSec = Math.ceil((autoMergeEndTime - Date.now()) / 1000);
+                let m = Math.floor(leftSec / 60);
+                let s = leftSec % 60;
+                btn.style.backgroundColor = '#2ecc71';
+                btn.style.boxShadow = '0 3px 0 #27ae60';
+                btn.innerText = `執行中 ${m}:${s < 10 ? '0' : ''}${s}`;
+                levelControl.style.display = 'flex';
+            } else {
+                btn.style.backgroundColor = '#95a5a6';
+                btn.style.boxShadow = '0 3px 0 #7f8c8d';
+                btn.innerText = '一鍵合成 (未解鎖)';
+                levelControl.style.display = 'none';
+            }
+        }
+
+        // --- 📖 說明書功能 ---
+        function openHelp() {
+            const isMerge = document.getElementById('page-merge').classList.contains('active');
+            const box = document.getElementById('help-content-box');
+            
+            if (isMerge) {
+                box.innerHTML = `
+                    <p><b>飢餓黑金妮</b><br>盤面會不定時掉落飢餓的黑金妮，請餵飽她(拖曳Lv.5以下的元素給她吃)，不然她會把你盤面上Lv.8(含)以下、等級最高的東西吃掉!</p>
+                    <p><b>迷你咩咩木</b><br>合成兩個Lv.4或兩個Lv.5的時候有可能產生迷你咩咩木。連續點擊50下打敗她們!</p>
+                    <p><b>CP</b><br>任意兩個Lv.12的成員可以組合出CP。</p>
+                    <p><b>咩咩木全員</b><br>任意兩組成員不重複的CP可以組合出咩咩木全員。</p>
+                    <p><b>出售</b><br>出售等級N的元素，可獲得 (2^(N-1)+N)*10 的金幣。</p>
+                    <p><b>一鍵整理</b><br>從Leader到忙內、等級低到等級高幫你排好。</p>
+                    <p><b>一鍵合成</b><br>使用一張CP卡可換取五分鐘一鍵合成功能；一張咩咩木全員則可以永久解鎖。一鍵合成功能開放時，可在下方調整需要一鍵合成的目標等級，盤面會自動把目標等級(含)以下的卡片合成。</p>
+                    <p><b>引繼碼</b><br>在設定中可以找到，複製引繼碼以免進度遺失、或是轉移到不同裝置遊玩。</p>
+                `;
+            } else {
+                box.innerHTML = `
+                    <p><b>驚喜包</b><br>每張驚喜包含有三張卡，每張卡有5%的機率是自選卡；若沒抽中則會累積成「木木的眼淚」，集滿30滴一樣可以換一張自選卡!</p>
+                `;
+            }
+            document.getElementById('help-modal').style.display = 'flex';
+        }
+        function closeHelp() { document.getElementById('help-modal').style.display = 'none'; }
+
+        // --- 💾 存讀檔系統 ---
+        function saveLocalData() {
+            try {
+                const charList = ['solar', 'moon', 'whee', 'hwa'];
+                const setList = Object.keys(gameCardSets);
+
+                // 1. 外面盤面
+                let bStr = [];
+                board.forEach((item, idx) => {
+                    if (!item) return;
+                    if (item.type === 'member') bStr.push(`${idx}:m${charList.indexOf(item.char)}${item.level}`);
+                    else if (item.type === 'cp') bStr.push(`${idx}:c${charList.indexOf(item.char1)}${charList.indexOf(item.char2)}`);
+                    else if (item.type === 'final') bStr.push(`${idx}:f`);
+                });
+                const compactBoard = bStr.join('-'); 
+
+                // 2. 紀念冊盤面
+                let mbStr = [];
+                memorialBoard.forEach((item, idx) => {
+                    if (!item) return;
+                    if (item.type === 'member') mbStr.push(`${idx}:m${charList.indexOf(item.char)}${item.level}`);
+                    else if (item.type === 'cp') mbStr.push(`${idx}:c${charList.indexOf(item.char1)}${charList.indexOf(item.char2)}`);
+                    else if (item.type === 'final') mbStr.push(`${idx}:f`);
+                });
+                const compactMemBoard = mbStr.join('-');
+
+                const compactSets = Array.from(claimedSets).map(s => setList.indexOf(s)).filter(i => i >= 0).join('-');
+                const mStr = currentMissionData ? btoa(encodeURIComponent(JSON.stringify(currentMissionData))) : "";
+
+                const permAutoFlag = isPermanentAutoMerge ? 1 : 0;
+                let leftSec = 0;
+                if (!isPermanentAutoMerge && autoMergeEndTime > Date.now()) {
+                    leftSec = Math.ceil((autoMergeEndTime - Date.now()) / 1000);
+                }
+
+                // 🌟 把超級肥大的圖鑑獨立存在另一個 localStorage，主存檔永遠保持固定 13 個精準欄位！
+                const compactGallery = galleryData.map(c => c.unlocked ? 1 : 0).join('');
+                localStorage.setItem('mamamoo_gallery', compactGallery);
+
+                // 主存檔結構 (固定 13 個欄位，索引絕不位移)
+                const rawStr = [
+                    coins,                                    // 0
+                    `${inventory.small},${inventory.large},${inventory.surprise}`, // 1
+                    tears,                                    // 2
+                    choiceCards,                              // 3
+                    currentLevel,                             // 4
+                    compactSets,                              // 5
+                    compactBoard,                             // 6
+                    mStr,                                     // 7
+                    permAutoFlag,                             // 8
+                    leftSec,                                  // 9
+                    totalMerges,                              // 10
+                    compactMemBoard,                          // 11
+                    "1"                                       // 12 (預留位)
+                ].join('|');
+
+                localStorage.setItem('mamamoo_save', rawStr);
+
+                if (typeof window.triggerAutoCloudSave === 'function') {
+                    window.triggerAutoCloudSave();
+                }
+            } catch (e) {
+                console.error("Auto-save failed", e);
+            }
+        }
+
+        function loadLocalData() {
+            const rawStr = localStorage.getItem('mamamoo_save');
+            if (!rawStr) return false;
+            try {
+                const parts = rawStr.split('|');
+                if (parts.length < 5) return false;
+
+                const charList = ['solar', 'moon', 'whee', 'hwa'];
+                const setList = Object.keys(gameCardSets);
+                
+                // 1. 基礎數值
+                coins = parseInt(parts[0]) || 0;
+                if (parts[1]) {
+                    let invParts = parts[1].split(',');
+                    inventory = { 
+                        small: parseInt(invParts[0]) || 0, 
+                        large: parseInt(invParts[1]) || 0, 
+                        surprise: parseInt(invParts[2]) || 0 
+                    };
+                }
+                
+                tears = parseInt(parts[2]) || 0;
+                choiceCards = parseInt(parts[3]) || 0;
+                currentLevel = parseInt(parts[4]) || 1;
+                
+                claimedSets.clear();
+                if (parts[5]) {
+                    parts[5].split('-').forEach(idxStr => {
+                        let idx = parseInt(idxStr);
+                        let sName = setList[idx];
+                        if (sName) claimedSets.add(sName);
+                    });
+                }
+                
+                // 2. 🌟 智慧防覆蓋盤面讀取 (Smart Fallback)
+                let tempBoard = new Array(BOARD_SIZE).fill(null);
+                let rawMainBoard = parts[6] || "";
+
+                // 如果精準索引抓不到東西，改用迴圈盲找所有符合卡片特徵的片段
+                if (!rawMainBoard.includes(':')) {
+                    let founds = [];
+                    parts.forEach(p => {
+                        if (p && p.includes(':') && (p.includes(':m') || p.includes(':c') || p.includes(':f'))) {
+                            founds.push(p);
+                        }
+                    });
+                    if (founds.length > 0) rawMainBoard = founds[0];
+                    if (founds.length > 1) parts[11] = founds[1]; // 順便把紀念冊的字串救回來
+                }
+
+                // 解析外面的盤面
+                if (rawMainBoard && rawMainBoard.includes(':')) {
+                    rawMainBoard.split('-').forEach(bItem => {
+                        let colonIdx = bItem.indexOf(':');
+                        if (colonIdx === -1) return;
+                        let bIdx = parseInt(bItem.substring(0, colonIdx));
+                        let valStr = bItem.substring(colonIdx + 1);
+
+                        if (!isNaN(bIdx) && valStr) {
+                            if (valStr.startsWith('m')) {
+                                tempBoard[bIdx] = { type: 'member', char: charList[parseInt(valStr[1])], level: parseInt(valStr.substring(2)) };
+                            } else if (valStr.startsWith('c')) {
+                                tempBoard[bIdx] = { type: 'cp', char1: charList[parseInt(valStr[1])], char2: charList[parseInt(valStr[2])] };
+                            } else if (valStr === 'f') {
+                                tempBoard[bIdx] = { type: 'final' };
+                            }
+                        }
+                    });
+                    board = tempBoard;
+                } else if (parts.length > 6) {
+                    // 如果字串裡面真的是空的盤面，那就把空盤面套用上去
+                    board = tempBoard;
+                }
+
+                // 3. 任務資料讀取
+                let missionLoaded = false;
+                parts.forEach(p => {
+                    if (p && (p.startsWith('ey') || (p.length > 20 && !p.includes(':') && !/^[01]+$/.test(p)))) {
+                        try {
+                            let decodedStr = atob(p);
+                            try { decodedStr = decodeURIComponent(decodedStr); } catch(e) {} 
+                            let parsed = JSON.parse(decodedStr);
+                            if (parsed && parsed.tasks) {
+                                currentMissionData = parsed;
+                                missionLoaded = true;
+                            }
+                        } catch(err) {}
+                    }
+                });
+
+                if (!missionLoaded && !currentMissionData) {
+                    currentMissionData = generateMissionsForLevel(currentLevel);
+                }
+
+                // 4. 一鍵合成狀態
+                isPermanentAutoMerge = false;
+                autoMergeEndTime = 0;
+                if (parts.length > 8 && parts[8] === '1') {
+                    isPermanentAutoMerge = true;
+                }
+                if (parts.length > 9 && parts[9]) {
+                    let savedLeftSec = parseInt(parts[9]) || 0;
+                    if (savedLeftSec > 0 && !isPermanentAutoMerge) {
+                        autoMergeEndTime = Date.now() + (savedLeftSec * 1000);
+                    }
+                }
+                
+                totalMerges = 0;
+                if (parts.length > 10 && parts[10]) {
+                    totalMerges = parseInt(parts[10]) || 0;
+                }
+
+                // 5. 解析紀念冊
+                let tempMemBoard = new Array(BOARD_SIZE).fill(null);
+                let rawMemBoard = parts[11] || "";
+                if (rawMemBoard && rawMemBoard.includes(':')) {
+                    rawMemBoard.split('-').forEach(bItem => {
+                        let colonIdx = bItem.indexOf(':');
+                        if (colonIdx === -1) return;
+                        let bIdx = parseInt(bItem.substring(0, colonIdx));
+                        let valStr = bItem.substring(colonIdx + 1);
+
+                        if (!isNaN(bIdx) && valStr) {
+                            if (valStr.startsWith('m')) {
+                                tempMemBoard[bIdx] = { type: 'member', char: charList[parseInt(valStr[1])], level: parseInt(valStr.substring(2)) };
+                            } else if (valStr.startsWith('c')) {
+                                tempMemBoard[bIdx] = { type: 'cp', char1: charList[parseInt(valStr[1])], char2: charList[parseInt(valStr[2])] };
+                            } else if (valStr === 'f') {
+                                tempMemBoard[bIdx] = { type: 'final' };
+                            }
+                        }
+                    });
+                    memorialBoard = tempMemBoard;
+                }
+                
+                // --- 🌟 插入這段：自動相容並打撈舊版引繼碼裡面的圖鑑！ ---
+                parts.forEach(p => {
+                    // 如果發現字串長度超過 100，而且裡面「只有 0 和 1」，那絕對是舊版的圖鑑資料！
+                    if (p && p.length > 100 && /^[01]+$/.test(p)) {
+                        localStorage.setItem('mamamoo_gallery', p); // 直接幫他升級存入新版獨立空間！
+                    }
+                });
+
+                // 6. 🌟 寬鬆圖鑑資料讀取 (有多少讀多少，絕不因為長度不合而歸零)
+                const savedGallery = localStorage.getItem('mamamoo_gallery');
+                if (savedGallery) {
+                    for (let cIdx = 0; cIdx < galleryData.length; cIdx++) {
+                        if (cIdx < savedGallery.length) {
+                            galleryData[cIdx].unlocked = (savedGallery[cIdx] === '1');
+                        }
+                    }
+                }
+                
+                bossActive = false;
+                return true;
+            } catch (e) {
+                console.error("Load failed safely", e);
+                return false;
+            }
+        }
+
+        // --- 🎁 嚴格時間線的補償系統 ---
+        function checkAndClaimCompensation() {
+            const maintenanceDeadline = new Date("2026-08-24T12:00:00").getTime();
+            let createTime = localStorage.getItem('player_created_at');
+            
+            if (!createTime) {
+                createTime = Date.now();
+                localStorage.setItem('player_created_at', createTime);
+            } else {
+                createTime = parseInt(createTime);
+            }
+
+            const compensations = [
+                {
+                    id: "compensation_20260824_1",
+                    reward: () => { choiceCards += 3; },
+                    msg: "💚 【營運補償公告】\n\n感謝各位木木的耐心等候與熱情測試！\n本次維護已順利完成。\n\n🎁 補償已發放: \n- 萬能自選卡 +3 張 ✨",
+                    log: "🎁 成功領取 3 張萬能自選卡補償！"
+                },
+                {
+                    id: "compensation_20260824_2",
+                    reward: () => { inventory.large += 2; },
+                    msg: "💚 【營運補償公告】\n\n感謝各位木木的耐心等候與熱情測試！\n本次維護已順利完成。\n\n🎁 補償已發放: \n- 大卡包 +2 包 ✨",
+                    log: "🎁 成功領取 2 包大卡包補償！"
+                },
+                {
+                    id: "compensation_20260826_1",
+                    reward: () => { choiceCards += 3; },
+                    msg: "💚 【營運補償公告】\n\n感謝各位木木的耐心等候與熱情測試！\n本次維護已完成。\n\n🎁 補償已發放: \n- 萬能自選卡 +3 張 ✨\n\n----------------------------\n⚠️ **【緊急公告】**\n因本次維護改動較大，若遇到進度遺失，請直接私訊 **moomoo_sh3d** 的 Threads 或 IG，會再幫您手動加回遺失的卡牌！",
+                    log: "🎁 成功領取3張萬能自選卡補償！"
+                },
+                // 🌟 新增：強力終極補償包，強制配發給所有玩家！
+                {
+                    id: "compensation_20260827_1", 
+                    reward: () => { choiceCards += 10; }, 
+                    msg: "💚 【致歉與補償公告】\n\n因為維護時發生了史詩級重大疏失😭導致部分木木的圖鑑資料遺失，在此向大家鄭重道歉。\n\n🎁 若您的資料有遺失，請在「設定 -> credits」找到我的聯絡方式，將【目前的引繼碼】用 Email 或私訊寄給我，並告訴我您大約損失的圖鑑數量。\n\n我會幫您手動加回並把新的引繼碼回傳給您！",
+                    log: "🎁 在此期間，先提供您10張自選卡。"
+                }
+            ];
+
+            compensations.forEach(comp => {
+                let claimed = localStorage.getItem(comp.id);
+                // 這裡我們讓這包 20260827_fix 所有玩家都能拿到，不限時間
+                if (!claimed && (createTime < maintenanceDeadline || comp.id === "compensation_20260827_fix")) {
+                    comp.reward();
+                    localStorage.setItem(comp.id, 'true');
+                    alert(comp.msg);
+                    logMsg(comp.log);
+                } else if (!claimed && createTime >= maintenanceDeadline) {
+                    localStorage.setItem(comp.id, 'expired');
+                }
+            });
+
+            updateShopUI();
+            updateBoard();
+        }
+
+        function openSettings() {
+            document.getElementById('settings-menu').style.display = 'block';
+            document.getElementById('settings-transfer').style.display = 'none';
+            document.getElementById('settings-credits').style.display = 'none';
+            document.getElementById('settings-update-log').style.display = 'none';
+            document.getElementById('settings-modal').style.display = 'flex';
+        }
+        function closeSettings() { 
+            document.getElementById('settings-modal').style.display = 'none'; 
+        }
+        function showTransferMenu() {
+            document.getElementById('settings-menu').style.display = 'none';
+            document.getElementById('settings-transfer').style.display = 'block';
+            document.getElementById('transfer-code-input').value = '';
+        }
+        function showCredits() {
+            document.getElementById('settings-menu').style.display = 'none';
+            document.getElementById('settings-credits').style.display = 'block';
+        }
+        function showUpdateLog() {
+            document.getElementById('settings-menu').style.display = 'none';
+            document.getElementById('settings-update-log').style.display = 'block';
+        }
+        function toggleLog(logId) {
+            let content = document.getElementById(logId);
+            content.style.display = (content.style.display === "none") ? "block" : "none";
+        }
+        function backToSettings() {
+            document.getElementById('settings-transfer').style.display = 'none';
+            document.getElementById('settings-credits').style.display = 'none';
+            document.getElementById('settings-update-log').style.display = 'none';
+            document.getElementById('settings-menu').style.display = 'block';
+        }
+
+        // 🌟 產生新版引繼碼（包含盤面與圖鑑，用 ### 隔開）
+        function generateTransferCode() {
+            saveLocalData();
+            const rawStr = localStorage.getItem('mamamoo_save') || "";
+            const galStr = localStorage.getItem('mamamoo_gallery') || "";
+            
+            if (rawStr) {
+                const combinedStr = rawStr + "###" + galStr;
+                const inputEl = document.getElementById('transfer-code-input');
+                inputEl.value = btoa(combinedStr);
+                inputEl.select(); 
+                logMsg("✅ 成功產生！已包含盤面與圖鑑進度！");
+            } else {
+                logMsg("❌ 產生引繼碼失敗！");
+            }
+        }
+
+        // 🌟 讀取新版引繼碼（相容舊版沒包圖鑑的格式）
+        function applyTransferCode() {
+            const code = document.getElementById('transfer-code-input').value.trim();
+            if (!code) { logMsg("⚠️ 請先貼上引繼碼！"); return; }
+
+            let checkCode = code.toUpperCase(); 
+            if (checkCode === "MAMAMOO" || checkCode === "20140619" || checkCode === "140619") {
+                let easterEggAudio = new Audio('audios/mamamoo_greeting.mp3'); 
+                easterEggAudio.play().catch(err => console.log("音效播放被阻擋", err));
+
+                logMsg("I say MAMA MAMA MOO~");
+
+                let claimedEgg001 = localStorage.getItem('claimed_egg_001');
+                if (!claimedEgg001) {
+                    coins += 6190;
+                    localStorage.setItem('claimed_egg_001', 'true');
+                    updateShopUI();
+                }
+
+                document.getElementById('transfer-code-input').value = "";
+                backToSettings();
+                closeSettings();
+                return;
+            }
+
+            try {
+                const decodedStr = atob(code);
+                let saveStr = decodedStr;
+                let galStr = "";
+
+                if (decodedStr.includes("###")) {
+                    const parts = decodedStr.split("###");
+                    saveStr = parts[0];
+                    galStr = parts[1];
+                }
+
+                localStorage.setItem('mamamoo_save', saveStr);
+                if (galStr) {
+                    localStorage.setItem('mamamoo_gallery', galStr);
+                }
+
+                loadLocalData();
+                updateShopUI();
+                updateGalleryUI();
+                updateBoard();
+                backToSettings();
+                closeSettings();
+                logMsg("🎉 進度與圖鑑讀取成功！歡迎回來！");
+            } catch (e) {
+                logMsg("❌ 引繼碼損毀或版本不符，讀取失敗！");
+            }
+        }
+
+        function openImageModal(src) {
+            document.getElementById('enlarged-img').src = src;
+            document.getElementById('image-modal').style.display = 'flex';
+        }
+        function closeImageModal() {
+            document.getElementById('image-modal').style.display = 'none';
+            document.getElementById('enlarged-img').src = '';
+        }
+
+        function generateMissionsForLevel(level) {
+            let taskCount = Math.floor(Math.random() * 3) + 1; 
+            let tasks = [];
+            
+            // 🌟 記錄這批任務已經出現過哪些「角色」或「CP」
+            let usedTaskKeys = new Set(); 
+
+            for (let i = 0; i < taskCount; i++) {
+                let isCP, charId, targetLvl, count, reward, taskObj, taskKey;
+                let attempts = 0; // 防呆機制，避免系統陷入無窮迴圈
+
+                do {
+                    isCP = (level > 10 && Math.random() < 0.05); 
+                    
+                    if (isCP) {
+                        taskKey = 'cp'; 
+                        taskObj = { id: 't' + i, text: "合成 1 組任意 CP", char: 'cp', targetLevel: 0, count: 1, reward: 50000, done: false };
+                    } else {
+                        charId = chars[Math.floor(Math.random() * chars.length)].id;
+                        let maxLvl = Math.min(12, Math.max(3, Math.floor(level / 2) + 2));
+                        let minLvl = Math.max(2, maxLvl - 3);
+                        targetLvl = Math.floor(Math.random() * (maxLvl - minLvl + 1)) + minLvl;
+                        count = (targetLvl <= 5) ? Math.floor(Math.random() * 3) + 1 : 1; 
+                        
+                        let baseReward = Math.pow(2, targetLvl - 1) * 50; 
+                        reward = baseReward * count;
+                        reward = Math.floor(reward * (0.8 + Math.random() * 0.4)); 
+                        reward = Math.ceil(reward / 50) * 50; 
+
+                        // 🌟 關鍵修改：用 charId 作為 key，確保同一個人（例如容容）在同一個 Level 絕對不會重複出現兩次！
+                        taskKey = charId; 
+                        taskObj = { id: 't' + i, text: `${count} 個 ${getCharName(charId)} Lv.${targetLvl}`, char: charId, targetLevel: targetLvl, count: count, reward: reward, done: false };
+                    }
+                    attempts++;
+                } while (usedTaskKeys.has(taskKey) && attempts < 10); 
+                // ⬆️ 如果這個角色已經有任務了，且重抽次數小於 10 次，就繼續重抽別的成員
+
+                // 紀錄這個角色已被使用，並加入任務清單
+                usedTaskKeys.add(taskKey); 
+                tasks.push(taskObj);
+            }
+            return { level: level, tasks: tasks };
+        }
+
+        function initBoard() {
+            const boardEl = document.getElementById('game-board');
+            boardEl.innerHTML = '';
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.index = i;
+                cell.addEventListener('pointerdown', handlePointerDown);
+                boardEl.appendChild(cell);
+            }
+            if (!currentMissionData) currentMissionData = generateMissionsForLevel(currentLevel);
+            updateBoard();
+            setInterval(triggerRandomEvent, 30000);
+            initSpawnButton();
+        }
+
+        function sortBoard() {
+            if (bossActive || board.some(i => i && i.type === 'hungry')) {
+                logMsg("🚨 特殊事件中無法整理盤面！");
+                return;
+            }
+
+            // --- 🥚 容仙 IC 彩蛋計數邏輯 ---
+            if (!window.sortClickCount) window.sortClickCount = 0;
+            window.sortClickCount++;
+            
+            if (window.sortClickTimer) clearTimeout(window.sortClickTimer);
+            window.sortClickTimer = setTimeout(() => {
+                window.sortClickCount = 0; // 5秒後歸零
+            }, 3000);
+
+            if (window.sortClickCount >= 5) {
+                window.sortClickCount = 0; // 觸發後歸零
+                clearTimeout(window.sortClickTimer);
+                triggerYongICEasterEgg(); // 呼叫翻桌函數
+                return;
+            }
+            // -------------------------------
+
+            let members = [];
+            let cps = [];
+            let finals = [];
+            
+            board.forEach(item => {
+                if (!item) return;
+                if (item.type === 'member') members.push(item);
+                else if (item.type === 'cp') cps.push(item);
+                else if (item.type === 'final') finals.push(item);
+            });
+
+            const charOrder = { 'solar': 1, 'moon': 2, 'whee': 3, 'hwa': 4 };
+            members.sort((a, b) => {
+                if (charOrder[a.char] !== charOrder[b.char]) {
+                    return charOrder[a.char] - charOrder[b.char];
+                }
+                return a.level - b.level;
+            });
+
+            board = new Array(BOARD_SIZE).fill(null);
+            let idx = 0;
+            members.forEach(m => board[idx++] = m);
+            cps.forEach(c => board[idx++] = c);
+            finals.forEach(f => board[idx++] = f);
+
+            updateBoard();
+            logMsg("🧹 盤面已自動為您整理！");
+        }
+
+        function triggerYongICEasterEgg() {
+            // 播放音效
+            let audio = new Audio('audios/yong_aigoo.mp3');
+            audio.play().catch(err => console.log("音效播放被阻擋", err));
+
+            // 收集盤面上所有的卡片
+            let items = [];
+            board.forEach(item => {
+                if (item) items.push(item);
+            });
+
+            // 準備 64 個空位並打亂順序
+            let availableSpots = Array.from({length: BOARD_SIZE}, (_, i) => i);
+            for (let i = availableSpots.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [availableSpots[i], availableSpots[j]] = [availableSpots[j], availableSpots[i]];
+            }
+
+            // 清空盤面，把卡片隨機散落到各個位置
+            board = new Array(BOARD_SIZE).fill(null);
+            items.forEach(item => {
+                let spot = availableSpots.pop(); // 抽出一個隨機位置
+                board[spot] = item;
+            });
+
+            updateBoard();
+        }
+
+        function updateBoard() {
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((cell, index) => {
+                const item = board[index];
+                cell.className = 'cell';
+                cell.innerHTML = '';
+                cell.style.opacity = '1';
+                cell.style.animation = 'none'; 
+                
+                cell.style.touchAction = item ? 'none' : 'auto';
+                
+                if (!item || item.type !== 'boss_part') {
+                    cell.style.display = 'flex';
+                    cell.style.gridColumn = 'span 1';
+                    cell.style.gridRow = 'span 1';
+                    cell.style.aspectRatio = '1';
+                } else {
+                    cell.style.display = 'none'; 
+                }
+                
+                if (item) {
+                    if (item.type === 'member') {
+                        cell.innerHTML = `<img src="images/board/${item.char}_${item.level}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
+                    } else if (item.type === 'cp') {
+                        let cpName = getCpImageName(item.char1, item.char2);
+                        cell.innerHTML = `<img src="images/board/cp_${cpName}.jpg" onerror="this.src='';this.alt='CP'">`;
+                    } else if (item.type === 'final') {
+                        cell.innerHTML = `<img src="images/board/final_mamamoo.jpg" onerror="this.src='';this.alt='完全體'">`;
+                    } else if (item.type === 'hungry') {
+                        cell.style.animation = 'shake 0.5s infinite';
+                        cell.innerHTML = `
+                            <img src="images/board/hungry_hwa.jpg" onerror="this.src='';this.alt='飢餓華莎'">
+                            <div class="badge-overlay">${item.timeLeft}s</div>
+                        `;
+                    } else if (item.type === 'boss') {
+                        cell.style.gridColumn = 'span 2';
+                        cell.style.gridRow = 'span 2';
+                        cell.style.aspectRatio = 'auto'; 
+                        cell.style.cursor = 'pointer';
+                        cell.innerHTML = `
+                            <img src="images/board/${item.id}.jpg" onerror="this.src='';this.alt='Boss'">
+                            <div class="badge-overlay" style="font-size: 14px; bottom: 5px; right: 5px; background: rgba(231, 76, 60, 0.9);">HP: ${item.hp}</div>
+                        `;
+                    }
+                }
+            });
+            document.getElementById('coins').innerText = coins;
+            // 🌟 檢查等級是否達到 40，決定是否顯示高級召喚開關
+            const advContainer = document.getElementById('advanced-spawn-container');
+            if (advContainer) {
+                if (currentLevel >= 40) {
+                    advContainer.style.display = 'flex';
+                } else {
+                    advContainer.style.display = 'none';
+                    // 如果等級沒到 40，強制把勾勾取消
+                    const toggle = document.getElementById('advanced-spawn-toggle');
+                    if (toggle) toggle.checked = false;
+                }
+            }
+            updateTaskUI(); 
+            updateAutoButtonUI(); 
+            saveLocalData(); 
+        }
+
+        function updateTaskUI() {
+            const taskList = document.getElementById('task-list');
+            taskList.innerHTML = '';
+            document.getElementById('level-num').innerText = currentMissionData.level;
+            
+            currentMissionData.tasks.forEach((task, index) => {
+                const div = document.createElement('div');
+                div.className = 'task-item';
+                
+                let currentCount = 0;
+                if (task.char === 'cp') {
+                    currentCount = board.filter(i => i && i.type === 'cp').length;
+                } else {
+                    currentCount = board.filter(i => i && i.type === 'member' && i.char === task.char && i.level === task.targetLevel).length;
+                }
+                
+                if (task.done) currentCount = task.count; 
+
+                let iconHtml = '';
+                if (task.char === 'cp') {
+                    iconHtml = `<div style="width:40px; height:40px; display:flex; justify-content:center; align-items:center; background:#e1bee7; border-radius:6px; margin-right:10px; border:2px dashed #9c27b0; font-size:12px; font-weight:bold; color:#4a148c; flex-shrink:0;">CP</div>`;
+                } else {
+                    iconHtml = `<img src="images/board/${task.char}_${task.targetLevel}.jpg" style="width:40px; height:40px; object-fit:cover; border-radius:6px; margin-right:10px; background:#fff; flex-shrink:0; box-shadow:0 1px 3px rgba(0,0,0,0.2);" onerror="this.src='';this.alt='圖'">`;
+                }
+
+                let textContent = `
+                    <div style="display:flex; align-items:center; flex:1;">
+                        ${iconHtml}
+                        <div style="display:flex; flex-direction:column; justify-content:center;">
+                            <span style="font-size:0.9rem; ${task.done ? 'text-decoration:line-through; color:#aaa;' : 'font-weight:bold; color:#2c3e50;'}">${task.text} (${currentCount}/${task.count})</span>
+                            <span style="font-size:0.8rem; color:#f39c12; font-weight:bold; margin-top:2px;">獎勵: ${task.reward} 💰</span>
+                        </div>
+                    </div>
+                `;
+                
+                if (task.done) {
+                    div.innerHTML = `${textContent}<span class="task-done">✔️</span>`;
+                } else {
+                    let isReady = currentCount >= task.count;
+                    div.innerHTML = textContent;
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-submit ' + (isReady ? 'ready' : '');
+                    btn.innerText = '✔️提交';
+                    if (isReady) btn.onclick = () => submitTask(index);
+                    div.appendChild(btn);
+                }
+                taskList.appendChild(div);
+            });
+        }
+
+        function submitTask(taskIndex) {
+            const task = currentMissionData.tasks[taskIndex];
+            let removedCount = 0;
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                let item = board[i];
+                if (!item) continue;
+                let match = false;
+                if (task.char === 'cp' && item.type === 'cp') match = true;
+                else if (item.type === 'member' && item.char === task.char && item.level === task.targetLevel) match = true;
+                
+                if (match) {
+                    board[i] = null;
+                    removedCount++;
+                    if (removedCount >= task.count) break;
+                }
+            }
+            task.done = true; coins += task.reward; logMsg(`提交成功！獲得 ${task.reward}💰`);
+            
+            if (currentMissionData.tasks.every(t => t.done)) {
+                setTimeout(() => { 
+                    currentLevel++; 
+                    currentMissionData = generateMissionsForLevel(currentLevel);
+                    logMsg(`🎉 關卡升級！進入 Lv.${currentLevel}`); 
+                    updateBoard(); 
+                }, 500);
+            }
+            updateBoard();
+        }
+
+        let dragSourceIdx = -1;
+        let ghostEl = null;
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        const appContainer = document.getElementById('app-container');
+
+        function handlePointerDown(e) {
+            const index = parseInt(e.currentTarget.dataset.index);
+            if (!board[index]) return; 
+            if (board[index].type === 'boss') { hitBoss(index); e.preventDefault(); return; }
+            if (bossActive) return; 
+
+            dragSourceIdx = index;
+            isDragging = false;
+            startX = e.clientX; startY = e.clientY;
+
+            const appRect = appContainer.getBoundingClientRect();
+            ghostEl = document.createElement('div');
+            ghostEl.className = e.currentTarget.className + ' ghost';
+            ghostEl.innerHTML = e.currentTarget.innerHTML;
+            ghostEl.style.width = e.currentTarget.offsetWidth + 'px';
+            ghostEl.style.height = e.currentTarget.offsetHeight + 'px';
+            ghostEl.style.left = (e.clientX - appRect.left) + 'px';
+            ghostEl.style.top = (e.clientY - appRect.top) + 'px';
+            ghostEl.style.animation = 'none';
+            appContainer.appendChild(ghostEl);
+
+            e.currentTarget.style.opacity = '0.3'; 
+
+            document.addEventListener('pointermove', handlePointerMove);
+            document.addEventListener('pointerup', handlePointerUp);
+            e.currentTarget.releasePointerCapture(e.pointerId); 
+        }
+
+        function handlePointerMove(e) {
+            if (ghostEl) {
+                const appRect = appContainer.getBoundingClientRect();
+                ghostEl.style.left = (e.clientX - appRect.left) + 'px';
+                ghostEl.style.top = (e.clientY - appRect.top) + 'px';
+                if (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5) isDragging = true;
+            }
+        }
+
+        function handlePointerUp(e) {
+            document.removeEventListener('pointermove', handlePointerMove);
+            document.removeEventListener('pointerup', handlePointerUp);
+            if (ghostEl) { ghostEl.remove(); ghostEl = null; }
+            updateBoard(); 
+
+            if (!isDragging) { openEvoChart(dragSourceIdx); dragSourceIdx = -1; return; }
+
+            const elements = document.elementsFromPoint(e.clientX, e.clientY);
+            
+            const dropTrash = elements.find(el => el.id === 'trash-can');
+            if (dropTrash && dragSourceIdx !== -1) {
+                const item = board[dragSourceIdx];
+                if (item) {
+                    let effectiveLevel = 0;
+                    let itemName = "";
+
+                    if (item.type === 'member') {
+                        effectiveLevel = item.level;
+                        itemName = `Lv.${item.level} 卡片`;
+                    } else if (item.type === 'cp') {
+                        effectiveLevel = 13;
+                        itemName = "CP (等同 Lv.13)";
+                    } else if (item.type === 'final') {
+                        effectiveLevel = 14;
+                        itemName = "完全體 (等同 Lv.14)";
+                    }
+
+                    if (effectiveLevel > 0) {
+                        if (effectiveLevel >= 7) {
+                            let confirmSell = confirm(`⚠️ 警告！你即將出售珍貴的【${itemName}】！\n確定要賣掉嗎？`);
+                            if (!confirmSell) {
+                                logMsg("✅ 已取消出售，卡片安全回到盤面！");
+                                dragSourceIdx = -1;
+                                updateBoard();
+                                return; 
+                            }
+                        }
+
+                        const earn = (Math.pow(2, effectiveLevel - 1) + effectiveLevel) * 10;
+                        coins += earn;
+                        board[dragSourceIdx] = null;
+                        logMsg(`🗑️ 出售成功！獲得 ${earn} 💰`);
+                    } else {
+                        logMsg(`⚠️ 這個特殊物件無法出售！`);
+                    }
+                }
+                dragSourceIdx = -1;
+                updateBoard();
+                return;
+            }
+
+            // --- 📖 放入紀念冊邏輯 ---
+            const dropMemorial = elements.find(el => el.id === 'btn-memorial');
+            if (dropMemorial && dragSourceIdx !== -1) {
+                const item = board[dragSourceIdx];
+                if (item && (item.type === 'member' || item.type === 'cp' || item.type === 'final')) {
+                    let emptyMemIdx = memorialBoard.findIndex(x => !x);
+                    if (emptyMemIdx === -1) {
+                        logMsg("❌ 紀念冊已經滿了！");
+                    } else {
+                        if (confirm("⚠️ 將卡片放置到紀念冊後就不能再取出了，確定執行？")) {
+                            memorialBoard[emptyMemIdx] = item;
+                            board[dragSourceIdx] = null;
+                            logMsg("📖 已成功放入紀念冊！");
+                            saveLocalData();
+                        } else {
+                            logMsg("✅ 已取消放入！");
+                        }
+                    }
+                } else {
+                    logMsg("⚠️ 這個東西不能放進紀念冊喔！");
+                }
+                dragSourceIdx = -1;
+                updateBoard();
+                return;
+            }
+
+            const dropTarget = elements.find(el => el.classList.contains('cell') && el.dataset.index);
+            if (dropTarget) {
+                const dropIdx = parseInt(dropTarget.dataset.index);
+                if (dropIdx !== dragSourceIdx) executeMerge(dragSourceIdx, dropIdx);
+            }
+            dragSourceIdx = -1;
+        }
+        
+        function findEmpty2x2() {
+            let validSpots = [];
+            for (let r = 0; r < 7; r++) { 
+                for (let c = 0; c < 7; c++) { 
+                    let i1 = r * 8 + c;
+                    if (!board[i1] && !board[i1+1] && !board[i1+8] && !board[i1+9]) validSpots.push(i1);
+                }
+            }
+            return validSpots.length > 0 ? validSpots[Math.floor(Math.random() * validSpots.length)] : -1;
+        }
+
+        function executeMerge(srcIdx, targetIdx) {
+            const srcItem = board[srcIdx];
+            const targetItem = board[targetIdx];
+
+            if (!targetItem) { board[targetIdx] = srcItem; board[srcIdx] = null; updateBoard(); return; }
+
+            if ((targetItem.type === 'hungry' && srcItem.type === 'member') || (srcItem.type === 'hungry' && targetItem.type === 'member')) {
+                let memberItem = srcItem.type === 'member' ? srcItem : targetItem;
+                let hungryIdx = targetItem.type === 'hungry' ? targetIdx : srcIdx;
+                
+                if (memberItem.level > 5) {
+                    logMsg("⚠️ 黑金妮拒吃太高級的！重新計時 10 秒！");
+                    board[hungryIdx].timeLeft = 10; 
+                    updateBoard(); 
+                    return;
+                }
+                
+                board[targetIdx] = null; board[srcIdx] = null; clearInterval(hwasaTimerId); coins += 200; logMsg("黑金妮吃飽了！+200💰"); updateBoard(); return;
+            }
+
+            if (srcItem.type === 'member' && targetItem.type === 'member' && srcItem.char === targetItem.char && srcItem.level === targetItem.level) {
+                if (srcItem.level < 12) {
+                    if (srcItem.level === 4 || srcItem.level === 5) {
+                        board[srcIdx] = null; board[targetIdx] = null; 
+                        let spot = findEmpty2x2();
+                        
+                        let bossChance = (srcItem.level === 4) ? 0.075 : 0.05;
+                        
+                        if (spot !== -1 && Math.random() < bossChance) { 
+                            triggerBoss(spot); return; 
+                        } else { 
+                            board[srcIdx] = srcItem; board[targetIdx] = targetItem; 
+                        }
+                    }
+                    board[targetIdx] = { type: 'member', char: targetItem.char, level: targetItem.level + 1 };
+                    board[srcIdx] = null; logMsg(`合成了 Lv.${targetItem.level + 1}`);
+                }
+            } else if (srcItem.level === 12 && targetItem.level === 12 && srcItem.char !== targetItem.char) {
+                board[targetIdx] = { type: 'cp', char1: srcItem.char, char2: targetItem.char }; board[srcIdx] = null; logMsg("解鎖 CP！");
+            } else if (srcItem.type === 'cp' && targetItem.type === 'cp') {
+                const charsInvolved = new Set([srcItem.char1, srcItem.char2, targetItem.char1, targetItem.char2]);
+                if (charsInvolved.size === 4) { board[targetIdx] = { type: 'final' }; board[srcIdx] = null; logMsg("🎉 MAMAMOO 完全體！"); } 
+                else { logMsg("CP 角色重複！"); }
+            }
+            updateBoard();
+        }
+
+        const bossPool = [
+            { id: 'boss_solar', name: '迷你容容', reward: 1200 },
+            { id: 'boss_moon', name: '迷你星星', reward: 1000 },
+            { id: 'boss_whee', name: '迷你輝妮', reward: 1500 },
+            { id: 'boss_hwa', name: '迷你黑金妮', reward: 2000 }
+        ];
+
+        function triggerBoss(spotIdx) {
+            bossActive = true; 
+            const bossData = bossPool[Math.floor(Math.random() * bossPool.length)];
+            board[spotIdx] = { type: 'boss', hp: 50, name: bossData.name, id: bossData.id, reward: bossData.reward };
+            board[spotIdx+1] = { type: 'boss_part' }; board[spotIdx+8] = { type: 'boss_part' }; board[spotIdx+9] = { type: 'boss_part' };
+            logMsg(`💥 基因突變！${board[spotIdx].name}霸佔了盤面！`); 
+            updateBoard();
+        }
+
+        function hitBoss(index) {
+            if (!bossActive) return;
+            const boss = board[index];
+            if (!boss) return;
+
+            boss.hp--;
+            if (boss.hp <= 0) {
+                bossActive = false; coins += boss.reward; 
+                logMsg(`🎉 打敗${boss.name}！獲得 ${boss.reward} 💰`); 
+                board[index] = null; board[index+1] = null; board[index+8] = null; board[index+9] = null; 
+            }
+            updateBoard();
+        }
+
+        function triggerRandomEvent() {
+            if (!document.getElementById('page-merge').classList.contains('active')) return;
+            if (bossActive) return;
+            
+            const emptyIndices = [];
+            board.forEach((item, idx) => { if (!item) emptyIndices.push(idx); });
+            if (emptyIndices.length === 0) return;
+
+            if (Math.random() < 0.15) {
+                const dropIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+                const targetCell = document.querySelector(`.cell[data-index='${dropIdx}']`);
+                if (!targetCell) return;
+                
+                const rect = targetCell.getBoundingClientRect();
+                const appRect = appContainer.getBoundingClientRect();
+
+                const animEl = document.createElement('div');
+                animEl.className = 'cell falling-hwasa'; 
+                animEl.innerHTML = `<img src="images/board/hungry_hwa.jpg" style="width: 85%; height: 85%; object-fit: contain;">`;
+                animEl.style.width = rect.width + 'px';
+                animEl.style.height = rect.height + 'px';
+                animEl.style.left = (rect.left - appRect.left) + 'px';
+                animEl.style.top = '-100px'; 
+                appContainer.appendChild(animEl);
+
+                logMsg("🚨 飢餓黑金妮從天而降！");
+                void animEl.offsetWidth; 
+                animEl.style.top = (rect.top - appRect.top) + 'px';
+
+                setTimeout(() => {
+                    animEl.remove();
+                    board[dropIdx] = { type: 'hungry', timeLeft: 10 };
+                    updateBoard();
+
+                    hwasaTimerId = setInterval(() => {
+                        if (!document.getElementById('page-merge').classList.contains('active')) return;
+                        const idx = board.findIndex(i => i && i.type === 'hungry');
+                        if (idx === -1) { clearInterval(hwasaTimerId); return; }
+                        board[idx].timeLeft--;
+                        if (board[idx].timeLeft <= 0) {
+                            clearInterval(hwasaTimerId); board[idx] = null; eatHighestItem();
+                        } else { updateBoard(); }
+                    }, 1000);
+                }, 400); 
+            }
+        }
+
+        function eatHighestItem() {
+            let maxLevel = -1, targetIdx = -1;
+            board.forEach((item, idx) => { 
+                if (item && item.type === 'member' && item.level > maxLevel && item.level <= 7) { 
+                    maxLevel = item.level; targetIdx = idx; 
+                } 
+            });
+            if (targetIdx !== -1) { 
+                board[targetIdx] = null; logMsg(`😱 黑金妮吃掉了你的 Lv.${maxLevel} 卡片！`); 
+            } else { logMsg(`沒有 Lv.7 以下的食物，黑金妮餓著離開了！`); }
+            updateBoard();
+        }
+
+        let spawnTimer = null;
+        let spawnInterval = null;
+
+        function initSpawnButton() {
+            const btn = document.getElementById('btn-spawn');
+            btn.addEventListener('pointerdown', handleSpawnPress);
+            btn.addEventListener('pointerup', stopSpawning);
+            btn.addEventListener('pointerleave', stopSpawning);
+            btn.addEventListener('pointercancel', stopSpawning);
+            btn.addEventListener('contextmenu', e => e.preventDefault()); 
+        }
+
+        function handleSpawnPress(e) {
+            if (e && e.preventDefault) e.preventDefault();
+            if (!spawnSingleItem()) return;  
+            spawnTimer = setTimeout(() => {
+                spawnInterval = setInterval(() => { if (!spawnSingleItem()) stopSpawning(); }, 100); 
+            }, 400);
+        }
+
+        function stopSpawning() { clearTimeout(spawnTimer); clearInterval(spawnInterval); }
+
+        function spawnSingleItem() {
+            if (bossActive) return false;
+            const emptyIndices = []; 
+            board.forEach((item, idx) => { if (!item) emptyIndices.push(idx); });
+            if (emptyIndices.length === 0) { logMsg("⚠️ 盤面滿了！"); return false; }
+            
+            const randIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+            const randChar = chars[Math.floor(Math.random() * chars.length)].id;
+            
+            let spawnLevel = 1;
+            let randNum = Math.random() * 100;
+            
+            // 🌟 檢查是否開啟「高級召喚」（必須等級 >= 40 且開關有打勾）
+            const isAdvancedOn = currentLevel >= 40 && document.getElementById('advanced-spawn-toggle') && document.getElementById('advanced-spawn-toggle').checked;
+
+            if (currentLevel > 20) {
+                if (randNum < 40) spawnLevel = 1;
+                else if (randNum < 65) spawnLevel = 2;
+                else if (randNum < 80) spawnLevel = 3;
+                else if (randNum < 90) spawnLevel = 4;
+                else if (randNum < 97) spawnLevel = 5;
+                else spawnLevel = 6;
+            } else if (currentLevel > 8) {
+                if (randNum < 50) spawnLevel = 1;
+                else if (randNum < 75) spawnLevel = 2;
+                else if (randNum < 90) spawnLevel = 3;
+                else spawnLevel = 4;
+            } else if (currentLevel > 4) {
+                if (randNum < 70) spawnLevel = 1;
+                else spawnLevel = 2;
+            }
+
+            // 🌟 如果開啟高級召喚，直接將原本的等級平移 +2 (變成 Lv.3 ~ 8)
+            if (isAdvancedOn) {
+                spawnLevel += 2;
+            }
+
+            board[randIdx] = { type: 'member', char: randChar, level: spawnLevel }; 
+            updateBoard(); 
+            return true;
+        }
+
+        function openEvoChart(index) {
+            const item = board[index];
+            if (!item || item.type !== 'member') return;
+            document.getElementById('modal-title').innerText = `${getCharName(item.char)} 的進化表`;
+            document.getElementById('modal-desc').innerText = '點擊外面關閉';
+            const grid = document.getElementById('modal-grid');
+            grid.innerHTML = '';
+            for (let i = 1; i <= 12; i++) {
+                const box = document.createElement('div');
+                box.className = `evo-cell`;
+                box.innerHTML = `<img src="images/board/${item.char}_${i}.jpg" onerror="this.src='';this.alt='Lv.${i}'">`;
+                grid.appendChild(box);
+            }
+            document.getElementById('evo-modal').style.display = 'flex';
+        }
+        function closeModal() { document.getElementById('evo-modal').style.display = 'none'; }
+
+        // --- ✨ 沈浸式抽卡核心系統 ✨ ---
+        let currentRevealIndex = -1;
+        let revealResults = [];
+
+        function buyPack(cost, type) {
+            if (coins < cost) { logMsg("❌ 金幣不足！"); return; }
+            coins -= cost; inventory[type]++; updateShopUI(); logMsg("✅ 購買成功！請到拆卡區開啟！");
+        }
+
+        function openPack(type) {
+            if (inventory[type] <= 0) { logMsg("❌ 沒有卡包！"); return; }
+            inventory[type]--; 
+            
+            let drawCount = type === 'small' ? 10 : (type === 'large' ? 20 : 3);
+            let results = [];
+            
+            for (let i = 0; i < drawCount; i++) {
+                if (type === 'surprise') {
+                    if (Math.random() < 0.05) {
+                        results.push({ type: 'choice', html: `<span style="font-size: 1.2rem;">✨ 萬能自選卡 ✨</span>` });
+                        choiceCards++;
+                    } else {
+                        results.push({ type: 'meme', html: `<img src="images/memes/meme_01.jpg" style="max-height:80px; max-width:80px; object-fit:contain; border-radius:6px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);" onerror="this.alt='meme'">` });
+                        addTears();
+                    }
+                } else {
+                    if (galleryData.length === 0) {
+                        results.push({ type: 'dup', html: `❌ 沒有圖鑑資料` });
+                        continue;
+                    }
+                    const card = galleryData[Math.floor(Math.random() * galleryData.length)];
+                    if (!card.unlocked) {
+                        card.unlocked = true;
+                        results.push({ type: 'new', path: card.path, name: card.name, html: `<div style="display:flex; align-items:center; gap:10px; width:100%;"><img src="${card.path}" style="height:45px; width:45px; object-fit:cover; border-radius:6px; border:1px solid #ddd;"> <div style="flex:1; text-align:left;">🆕 ${card.name}</div></div>` });
+                        checkSetCompletion(card.set);
+                    } else {
+                        coins += 100;
+                        results.push({ type: 'dup', path: card.path, name: card.name, html: `<div style="display:flex; align-items:center; gap:10px; width:100%; opacity:0.6;"><img src="${card.path}" style="height:45px; width:45px; object-fit:cover; border-radius:6px; border:1px solid #ddd;"> <div style="flex:1; text-align:left;">🔁 ${card.name} <span style="font-size:0.8rem">(轉100💰)</span></div></div>` });
+                    }
+                }
+            }
+            
+            saveLocalData(); 
+            showRevealModal(results); 
+        }
+
+        function showRevealModal(results) {
+            revealResults = results;
+            currentRevealIndex = -1;
+            document.getElementById('reveal-modal').style.display = 'flex';
+            nextReveal();
+        }
+
+        function nextReveal() {
+            currentRevealIndex++;
+            if (currentRevealIndex >= revealResults.length) {
+                endReveal();
+                return;
+            }
+            const res = revealResults[currentRevealIndex];
+            const display = document.getElementById('reveal-card');
+            
+            document.getElementById('reveal-count').innerText = `${currentRevealIndex + 1} / ${revealResults.length}`;
+            
+            display.style.animation = 'none';
+            void display.offsetWidth;
+            display.style.animation = 'popIn 0.3s';
+
+            if (res.type === 'meme') {
+                display.innerHTML = `
+                    <img src="images/memes/meme_01.jpg" style="width: 220px; height: 220px; object-fit: contain; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);" onerror="this.alt='meme'">
+                    <div style="margin-top: 20px; font-weight: bold; color: white; font-size: 1.2rem;">🥲 沒中...累積 1 滴眼淚</div>`;
+            } else if (res.type === 'choice') {
+                display.innerHTML = `
+                    <div style="font-size: 6rem; text-shadow: 0 0 20px #f1c40f;">✨</div>
+                    <div style="color: #f1c40f; font-weight: bold; margin-top: 15px; font-size: 1.8rem; text-shadow: 0 2px 4px rgba(0,0,0,0.5);">萬能自選卡！</div>`;
+            } else {
+                let borderColor = res.type === 'new' ? '#2ecc71' : '#ccc';
+                let statusText = res.type === 'new' ? '🆕 新卡解鎖！' : '🔁 重複卡轉 100💰';
+                display.innerHTML = `
+                    <img src="${res.path}" style="width: 220px; height: 220px; object-fit: cover; border-radius: 12px; border: 4px solid ${borderColor}; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
+                    <div style="margin-top: 20px; font-weight: bold; color: ${borderColor}; font-size: 1.3rem;">
+                        ${statusText}<br>
+                        <span style="color: white; font-size: 1.1rem; display: inline-block; margin-top: 5px;">${res.name}</span>
+                    </div>`;
+            }
+        }
+
+        function skipReveal(e) {
+            if(e) e.stopPropagation();
+            endReveal();
+        }
+
+        function endReveal() {
+            document.getElementById('reveal-modal').style.display = 'none';
+            displayResults(revealResults);
+            updateShopUI();
+            updateGalleryUI();
+        }
+
+        function displayResults(results) {
+            const display = document.getElementById('result-display');
+            display.innerHTML = '';
+            
+            const isMemePack = results.some(r => r.type === 'meme');
+            display.style.flexDirection = isMemePack ? 'row' : 'column';
+            display.style.flexWrap = 'wrap';
+            display.style.gap = '10px';
+
+            results.forEach(res => {
+                const div = document.createElement('div');
+                div.innerHTML = res.html;
+                if (!isMemePack) {
+                    div.style.color = (res.type === 'new' || res.type === 'choice') ? '#2ecc71' : '#7f8c8d';
+                    div.style.width = '100%';
+                }
+                display.appendChild(div);
+            });
+            updateBoard(); 
+        }
+
+        function addTears() {
+            tears++;
+            if (tears >= 30) {
+                tears -= 30;
+                choiceCards++;
+                logMsg("💧 木木的眼淚集滿！獲得一張自選卡！");
+            }
+        }
+
+        // --- 🥚 隱藏彩蛋：連點 5 次眼淚計量條 ---
+        let tearsClickCount = 0;
+        let tearsClickTimer = null;
+
+        window.triggerTearsEgg = function() {
+            // 如果已經領過，就直接中斷，當作沒事發生
+            if (localStorage.getItem('claimed_egg_tears')) return;
+
+            tearsClickCount++;
+            
+            // 如果 2 秒內沒繼續點，就歸零重新計算
+            if (tearsClickTimer) clearTimeout(tearsClickTimer);
+            tearsClickTimer = setTimeout(() => {
+                tearsClickCount = 0;
+            }, 2000); 
+
+            // 連續點擊達到 5 次
+            if (tearsClickCount >= 5) {
+                tearsClickCount = 0; // 歸零
+                clearTimeout(tearsClickTimer);
+                
+                // 標記為已領取，以後再也點不出來了
+                localStorage.setItem('claimed_egg_tears', 'true');
+                
+                // 呼叫原本的加眼淚函數
+                addTears(); 
+                
+                // 🌟 換成你專屬的神級台詞
+                logMsg("💧 木木神看見了你的渴望 擠出了一滴眼淚給你");
+                updateShopUI();
+                
+                // 觸發雲端存檔
+                if (typeof window.triggerAutoCloudSave === 'function') {
+                    window.triggerAutoCloudSave();
+                }
+            }
+        };
+
+        function useChoiceCard() {
+            if (choiceCards <= 0) { logMsg("❌ 你沒有自選卡！"); return; }
+            
+            const lockedCards = galleryData.filter(c => !c.unlocked);
+            if (lockedCards.length === 0) { logMsg("🎉 圖鑑已全滿，不需要自選啦！"); return; }
+
+            document.getElementById('modal-title').innerText = `請選擇你要解鎖的卡片`;
+            document.getElementById('modal-desc').innerText = `點擊卡片解鎖`;
+            const grid = document.getElementById('modal-grid');
+            grid.innerHTML = '';
+            
+            lockedCards.forEach(card => {
+                const box = document.createElement('div');
+                box.className = `evo-cell`;
+                box.style.background = '#eee';
+                
+                // 🌟 加上了頂部的 Set 名稱半透明標籤
+                box.innerHTML = `
+                    <div style="position: absolute; top: 0; left: 0; width: 100%; background: rgba(0,0,0,0.6); color: white; font-size: 9px; padding: 2px 0; border-radius: 6px 6px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        ${card.set}
+                    </div>
+                    <img src="${card.path}" onerror="this.src='';this.alt='找不到圖'" style="margin-top: 12px; height: 70%;">
+                `;
+                
+                box.onclick = (e) => {
+                    e.stopPropagation(); 
+                    choiceCards--;
+                    card.unlocked = true;
+                    logMsg(`✨ 成功使用自選卡解鎖：${card.name}！`);
+                    checkSetCompletion(card.set);
+                    updateShopUI();
+                    updateGalleryUI();
+                    closeModal();
+                };
+                grid.appendChild(box);
+            });
+            document.getElementById('evo-modal').style.display = 'flex';
+        }
+
+        function checkSetCompletion(setName) {
+            if (claimedSets.has(setName)) return; 
+            
+            const setCards = galleryData.filter(c => c.set === setName);
+            const allUnlocked = setCards.every(c => c.unlocked);
+            
+            if (allUnlocked) {
+                const reward = 100 * setCards.length;
+                coins += reward;
+                claimedSets.add(setName);
+                logMsg(`🎉 集滿【${setName}】！獲得 Set 獎勵 ${reward} 💰！`);
+                updateBoard();
+            }
+        }
+
+        function updateShopUI() { 
+            document.getElementById('inv-small').innerText = inventory.small; 
+            document.getElementById('inv-large').innerText = inventory.large; 
+            document.getElementById('inv-surprise').innerText = inventory.surprise; 
+            document.getElementById('coins').innerText = coins; 
+            document.getElementById('tears-count').innerText = tears;
+            document.getElementById('tears-bar').style.width = (tears / 30 * 100) + '%';
+            document.getElementById('choice-cards').innerText = choiceCards;
+            saveLocalData(); 
+        }
+
+        function updateGalleryUI() {
+            const gal = document.getElementById('gallery-container'); 
+            gal.innerHTML = ''; 
+            
+            let totalUnlocked = 0;
+            
+            const setsGroup = {};
+            galleryData.forEach(item => {
+                if (!setsGroup[item.set]) setsGroup[item.set] = [];
+                setsGroup[item.set].push(item);
+                if (item.unlocked) totalUnlocked++;
+            });
+
+            for (let setName in setsGroup) {
+                const title = document.createElement('div');
+                title.className = 'set-title';
+                const isClaimed = claimedSets.has(setName);
+                title.innerText = `📂 ${setName} ` + (isClaimed ? '✅(已領獎)' : '');
+                gal.appendChild(title);
+
+                const grid = document.createElement('div');
+                grid.className = 'gallery-grid';
+                
+                setsGroup[setName].forEach(card => {
+                    const div = document.createElement('div');
+                    div.className = 'gallery-card' + (card.unlocked ? ' unlocked' : '');
+                    if (card.unlocked) {
+                        div.innerHTML = `<img src="${card.path}" onerror="this.src='';this.alt='找不到圖'">`;
+                        div.style.cursor = 'pointer';
+                        div.onclick = () => openImageModal(card.path);
+                    } else {
+                        div.innerText = '???';
+                    }
+                    grid.appendChild(div);
+                });
+                gal.appendChild(grid);
+            }
+            
+            document.getElementById('gallery-unlocked').innerText = totalUnlocked;
+            document.getElementById('gallery-total').innerText = galleryData.length;
+            saveLocalData(); 
+        }
+
+        function getCharName(id) { const f = chars.find(c => c.id === id); return f ? f.name : id; }
+
+        // ==========================================
+        // 📖 紀念冊系統內部邏輯
+        // ==========================================
+        let memDragSourceIdx = -1;
+        let memIsDragging = false;
+        let memStartX = 0, memStartY = 0;
+        let memGhostEl = null;
+
+        window.openMemorialBook = function() {
+            document.getElementById('memorial-modal').style.display = 'flex';
+            initMemorialBoard();
+        };
+        window.closeMemorialBook = function() {
+            document.getElementById('memorial-modal').style.display = 'none';
+        };
+
+        function initMemorialBoard() {
+            const boardEl = document.getElementById('memorial-board');
+            boardEl.innerHTML = '';
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.memindex = i;
+                cell.addEventListener('pointerdown', handleMemPointerDown);
+                boardEl.appendChild(cell);
+            }
+            updateMemorialBoard();
+        }
+
+        function updateMemorialBoard() {
+            const cells = document.querySelectorAll('#memorial-board .cell');
+            cells.forEach((cell, index) => {
+                const item = memorialBoard[index];
+                cell.innerHTML = '';
+                cell.style.touchAction = item ? 'none' : 'auto';
+
+                cell.style.aspectRatio = '1'; 
+                cell.style.display = 'flex';
+                
+                if (item) {
+                    if (item.type === 'member') cell.innerHTML = `<img src="images/board/${item.char}_${item.level}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
+                    else if (item.type === 'cp') {
+                        let cpName = getCpImageName(item.char1, item.char2);
+                        cell.innerHTML = `<img src="images/board/cp_${cpName}.jpg" onerror="this.src='';this.alt='CP'">`;
+                    }
+                    else if (item.type === 'final') cell.innerHTML = `<img src="images/board/final_mamamoo.jpg" onerror="this.src='';this.alt='完全體'">`;
+                }
+            });
+        }
+
+        function handleMemPointerDown(e) {
+            const index = parseInt(e.currentTarget.dataset.memindex);
+            if (!memorialBoard[index]) return;
+
+            memDragSourceIdx = index;
+            memIsDragging = false;
+            memStartX = e.clientX; memStartY = e.clientY;
+
+            const appRect = appContainer.getBoundingClientRect();
+            memGhostEl = document.createElement('div');
+            memGhostEl.className = e.currentTarget.className + ' ghost';
+            memGhostEl.innerHTML = e.currentTarget.innerHTML;
+            memGhostEl.style.width = e.currentTarget.offsetWidth + 'px';
+            memGhostEl.style.height = e.currentTarget.offsetHeight + 'px';
+            memGhostEl.style.left = (e.clientX - appRect.left) + 'px';
+            memGhostEl.style.top = (e.clientY - appRect.top) + 'px';
+            appContainer.appendChild(memGhostEl);
+
+            e.currentTarget.style.opacity = '0.3';
+
+            document.addEventListener('pointermove', handleMemPointerMove);
+            document.addEventListener('pointerup', handleMemPointerUp);
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+
+        function handleMemPointerMove(e) {
+            if (memGhostEl) {
+                const appRect = appContainer.getBoundingClientRect();
+                memGhostEl.style.left = (e.clientX - appRect.left) + 'px';
+                memGhostEl.style.top = (e.clientY - appRect.top) + 'px';
+                if (Math.abs(e.clientX - memStartX) > 5 || Math.abs(e.clientY - memStartY) > 5) memIsDragging = true;
+            }
+        }
+
+        function handleMemPointerUp(e) {
+            document.removeEventListener('pointermove', handleMemPointerMove);
+            document.removeEventListener('pointerup', handleMemPointerUp);
+            if (memGhostEl) { memGhostEl.remove(); memGhostEl = null; }
+            
+            const cells = document.querySelectorAll('#memorial-board .cell');
+            cells.forEach(c => c.style.opacity = '1');
+
+            if (!memIsDragging && memDragSourceIdx !== -1) {
+                // 點擊事件：跳出刪除警告
+                if (confirm("⚠️ 確定要從紀念冊刪除這張卡片嗎？\n(刪除後無法還原，也不會給金幣)")) {
+                    memorialBoard[memDragSourceIdx] = null;
+                    saveLocalData();
+                }
+                memDragSourceIdx = -1;
+                updateMemorialBoard();
+                return;
+            }
+
+            const elements = document.elementsFromPoint(e.clientX, e.clientY);
+            const dropTarget = elements.find(el => el.classList.contains('cell') && el.dataset.memindex);
+
+            if (dropTarget) {
+                const dropIdx = parseInt(dropTarget.dataset.memindex);
+                if (dropIdx !== memDragSourceIdx) {
+                    // 拖曳事件：兩張卡片交換位置
+                    let temp = memorialBoard[dropIdx];
+                    memorialBoard[dropIdx] = memorialBoard[memDragSourceIdx];
+                    memorialBoard[memDragSourceIdx] = temp;
+                    saveLocalData();
+                }
+            }
+            
+            memDragSourceIdx = -1;
+            updateMemorialBoard();
+        }
+
+        // --- 📋 一鍵複製聯絡資訊功能 ---
+        window.copyContactText = function(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    logMsg("✅ 已複製信箱：" + text);
+                }).catch(() => fallbackCopyText(text));
+            } else {
+                fallbackCopyText(text);
+            }
+        };
+
+        function fallbackCopyText(text) {
+            let textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px"; 
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                logMsg("✅ 已複製信箱：" + text);
+            } catch (err) {
+                alert("⚠️ 複製失敗，請手動選取複製！");
+            }
+            document.body.removeChild(textArea);
+        }
+        
+        window.onload = () => { 
+            
+            initGalleryData(); 
+            let hasSave = loadLocalData(); 
+            initBoard(); 
+            initMemorialBoard();
+            updateShopUI(); 
+            updateGalleryUI(); 
+
+            setInterval(updateAutoButtonUI, 1000);
+
+            checkAndClaimCompensation();
+            
+            if (hasSave) logMsg("✅ 已自動為您讀取上次遊玩進度！");
+        };
+    </script>
+</body>
+</html>
