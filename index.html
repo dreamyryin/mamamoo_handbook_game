@@ -262,6 +262,16 @@
     </script>
 
     <style>
+
+        /* 🚫 禁止手機長按選取圖片與文字，避免一直跳出複製選單 */
+        img, .card-item, div {
+            -webkit-touch-callout: none; /* 關閉 iOS 長按彈出選單 */
+            -webkit-user-select: none;   /* Safari */
+            -moz-user-select: none;      /* Firefox */
+            -ms-user-select: none;       /* IE/Edge */
+            user-select: none;           /* 標準語法 */
+        }
+        
         :root {
             --primary: #4caf50; 
             --bg-color: #f0f8f1; 
