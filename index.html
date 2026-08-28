@@ -202,7 +202,7 @@
             
             try {
                 // 依據「等級(level)」由高到低，抓取前 10 名
-                const q = query(collection(db, "game_saves"), orderBy("level", "desc"), limit(10));
+                const q = query(collection(db, "game_saves"), orderBy("level", "desc"), limit(20));
                 const querySnapshot = await getDocs(q);
                 
                 listEl.innerHTML = '';
@@ -737,7 +737,7 @@
             
             <!-- 標題與改名按鈕並排 -->
             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 10px;">
-                <h3 style="margin: 0; color: #f39c12;">🏆 排行榜 (Top 10)</h3>
+                <h3 style="margin: 0; color: #f39c12;">🏆 排行榜</h3>
                 <button onclick="changeNickname()" style="background: #3498db; color: white; border: none; padding: 5px 10px; border-radius: 5px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 0 #2980b9;">✏️ 改名</button>
             </div>
             
