@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>MAMAMOO 合成 GAME</title>
     
@@ -38,18 +38,46 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // 🚨 實時監聽全服維護狀態 (GM 一鍵開關)
+        // 🚨 實時監聽全服維護與智慧公告狀態
         const maintenanceDocRef = doc(db, "system", "status");
         onSnapshot(maintenanceDocRef, (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 const screen = document.getElementById('maintenance-screen');
+                const titleEl = document.getElementById('maintenance-title');
+                const textEl = document.getElementById('maintenance-text');
+        
+                const marqueeContainer = document.getElementById('marquee-container');
+                const marqueeContent = document.getElementById('marquee-content');
+
+                // 1. 處理維護紅屏
                 if (data.isMaintenance === true) {
-                    // 只要資料庫變成 true，瞬間鎖定全服玩家畫面！
+                    if (titleEl && data.title) titleEl.innerText = data.title;
+                    if (textEl && data.text) textEl.innerHTML = data.text;
                     if (screen) screen.style.display = 'flex';
                 } else {
-                    // 變成 false 就自動解除
                     if (screen) screen.style.display = 'none';
+                }
+
+                // 2. 處理智慧公告列（短字靜態、長字跑馬燈）
+                if (data.isAnnouncementActive === true && data.announcementText) {
+            
+                    if (data.announcementText.length > 40) {
+                        // 💡 長文字：複製兩份，並用 padding-right 確保兩句話中間有固定的安全距離
+                        marqueeContent.innerHTML = `
+                            <span style="padding-right: 50px;">${data.announcementText}</span>
+                            <span style="padding-right: 50px;">${data.announcementText}</span>
+                        `;
+                        marqueeContent.classList.add('is-long');
+                    } else {
+                        // 短文字：直接顯示
+                        marqueeContent.innerHTML = data.announcementText;
+                        marqueeContent.classList.remove('is-long');
+                    }
+
+                    marqueeContainer.style.display = 'block';
+                } else {
+                    marqueeContainer.style.display = 'none';
                 }
             }
         });
@@ -303,6 +331,40 @@
             padding: 20px;
             box-sizing: border-box;
         }
+
+        /* 📢 公告列外框 (預設隱藏，不常駐) */
+        #marquee-container {
+            display: none;
+            background: linear-gradient(90deg, #f39c12, #e67e22);
+            color: white;
+            padding: 6px 15px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            z-index: 90;
+            box-shadow: inset 0 -2px 5px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        /* 靜態顯示模式（短文字） */
+        #marquee-content {
+            display: inline-block;
+            white-space: nowrap;
+        }
+
+        /* 🏃‍♂️ 完美無縫滾動模式 */
+        #marquee-content.is-long {
+            padding-left: 0; /* ❌ 絕對不能加 100% */
+            animation: marqueeScroll 10s linear infinite; /* 秒數越小跑越快，可自行微調 */
+        }
+
+        @keyframes marqueeScroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); } /* 滾到一半瞬間重置，達成無縫！ */
+        }
+        
         
         #app-container {
             width: 100%; max-width: 430px; 
@@ -463,19 +525,23 @@
         .help-content { color: var(--text-dark); text-align: left; line-height: 1.5; font-size: 0.95rem;}
         .help-content p { margin: 10px 0; }
         .help-content b { font-size: 1.05rem; display: block; margin-top: 12px; color: #2e7d32; }
+        
     </style>
 </head>
 <body>
 
- <!-- 🚨 全服緊急維護紅屏畫面 (只要把下方開關打開就會顯示) -->
+    
+
+    <!-- 🚨 全服緊急維護紅屏畫面 -->
     <div id="maintenance-screen">
-        <h1 style="font-size: 2.2rem; margin-bottom: 15px;">🚨 緊急維護中 🚨</h1>
-        <p style="font-size: 1.1rem; line-height: 1.6; max-width: 380px;">
+        <h1 id="maintenance-title" style="font-size: 2.2rem; margin-bottom: 15px;">🚨 緊急維護中 🚨</h1>
+        <p id="maintenance-text" style="font-size: 1.1rem; line-height: 1.6; max-width: 380px;">
             伺服器發生異常，請不要進行動作。<br>正在緊急修復中，造成不便敬請見諒！
         </p>
     </div>
 
 <div id="app-container">
+    
     <div class="top-bar">
         <div class="coin-area">💰 <span id="coins">0</span></div>
         <div id="log-area">MAMAMOO 宿舍開啟！</div>
@@ -485,6 +551,11 @@
             <button id="btn-help-global" class="btn-help" onclick="openHelp()">❓</button>
             <button class="btn-settings" onclick="openSettings()">⚙️</button>
         </div>
+    </div>
+
+    <!-- 📢 動態公告/智慧跑馬燈列 -->
+    <div id="marquee-container">
+        <div id="marquee-content">載入公告中...</div>
     </div>
 
     <div class="main-content">
@@ -768,6 +839,7 @@
 
     <script>
 
+        
         let totalMerges = 0; // 🌟 我偷偷幫你加的總合成次數
         
         let gameCardSets = {};
@@ -1880,7 +1952,9 @@
 
         function triggerRandomEvent() {
             if (!document.getElementById('page-merge').classList.contains('active')) return;
+            
             if (bossActive) return;
+            if (bossActive || board.some(i => i && (i.type === 'boss' || i.type === 'boss_part'))) return;
             
             const emptyIndices = [];
             board.forEach((item, idx) => { if (!item) emptyIndices.push(idx); });
