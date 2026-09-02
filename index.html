@@ -495,9 +495,41 @@
         }
         .modal-container { background: white; padding: 15px; border-radius: 12px; width: 85%; max-height: 80%; overflow-y: auto; text-align: center; }
         
-        .evo-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 15px; }
-        .evo-cell { aspect-ratio: 1; border-radius: 6px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 11px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative;}
-        .evo-cell img { width: 85%; height: 85%; object-fit: contain; }
+        /* 1. 限制網格總寬度，不准被撐開 */
+        .evo-grid { 
+            display: grid; 
+            grid-template-columns: repeat(4, 1fr); 
+            gap: 5px; 
+            margin-top: 15px; 
+            width: 100%; 
+        }
+
+        /* 2. 強制每一格的寬度只能配合網格，且超出隱藏 */
+        .evo-cell { 
+            aspect-ratio: 1; 
+            width: 100%; 
+            border-radius: 6px; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            font-size: 11px; 
+            font-weight: bold; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+            cursor: pointer; 
+            position: relative;
+            overflow: hidden; 
+            min-width: 0;
+        }
+
+        /* 3. 最關鍵的：把圖片的絕對最大值鎖死！ */
+        .evo-cell img { 
+            width: 85%; 
+            height: 85%; 
+            object-fit: contain; 
+            max-width: 100%; 
+            max-height: 100%; 
+        }
 
         .panel-box { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
         .btn-action { background: linear-gradient(45deg, #f1c40f, #f39c12); border: none; color: white; padding: 10px; width: 100%; font-size: 1rem; font-weight: bold; border-radius: 8px; margin-top: 8px; cursor: pointer; }
@@ -686,6 +718,7 @@
         <div class="modal-container" onclick="event.stopPropagation()">
             <div id="settings-menu">
                 <h3 style="margin:0 0 15px 0; color:#2c3e50;">⚙️ 設定</h3>
+                <button id="btn-toggle-skin" class="btn-action" style="background: linear-gradient(45deg, #e67e22, #d35400);" onclick="toggleSkin()">👗 切換造型 (目前: 預設)</button>
                 <!-- ⚡ 按鈕 ID 在這，會隨狀態變更顏色與文字 -->
                 <button id="btn-google-login" class="btn-action" style="background: linear-gradient(45deg, #4285F4, #34A853);" onclick="window.loginWithGoogleCloud()">☁️ Google 登入與同步</button>
                 <button class="btn-action" onclick="showTransferMenu()">🔄 進度轉移 (引繼碼)</button>
@@ -768,6 +801,15 @@
                         </button>
                         <div id="log-20260827" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
                             新增彩蛋 (彩蛋提示:連續點擊5次)
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 10px;">
+                        <button onclick="toggleLog('log-20260902')" style="width:100%; text-align:left; padding:10px; font-weight:bold; background:#e0f7fa; color:#00838f; border:none; border-radius:5px; cursor:pointer;">
+                            📅 2026.09.02 12:30
+                        </button>
+                        <div id="log-20260902" style="display:none; padding:10px; background:#f9f9f9; border-left:3px solid #00acc1; font-size:14px; margin-top:5px; color:#333;">
+                            新增造型 / 新增彩蛋 (彩蛋提示:造型、等級、擺放)
                         </div>
                     </div>
                     
@@ -862,6 +904,24 @@
 
         let memorialBoard = new Array(BOARD_SIZE).fill(null); // 📖 紀念冊陣列
 
+        // 🌟 新增：記錄當前的造型 (1 為預設，2 為第二造型)
+        let currentSkin = localStorage.getItem('mamamoo_skin') || '1';
+
+        window.toggleSkin = function() {
+            currentSkin = currentSkin === '1' ? '2' : '1';
+            localStorage.setItem('mamamoo_skin', currentSkin);
+    
+            // 更新按鈕文字
+            const btn = document.getElementById('btn-toggle-skin');
+            if (btn) btn.innerText = `👗 切換造型 (目前: ${currentSkin === '1' ? '預設' : '造型2'})`;
+    
+            logMsg(`✨ 已切換至 ${currentSkin === '1' ? '預設造型' : '造型2'}！`);
+    
+            // 重新渲染畫面，讓新造型立刻生效
+            updateBoard();
+            updateMemorialBoard();
+        };
+        
         let currentLevel = 1;
         let currentMissionData = null;
         let hwasaTimerId = null;
@@ -1590,6 +1650,76 @@
             updateBoard();
         }
 
+       // --- 🥚 隱藏彩蛋：MAMAMOO 將會繼續下去 / We are MAMAMOO ---
+        let isWillContinuePlaying = false; // 防止重複瘋狂觸發的開關
+
+        function checkSkin2EasterEgg() {
+            // 條件 1：必須是第二套造型
+            if (currentSkin !== '2') {
+                isWillContinuePlaying = false; 
+                return;
+            }
+
+            let isPatternFound = false;
+
+            // 盤面是 8x8，我們逐列檢查 (row 0~7)
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col <= 4; col++) {
+                    let i1 = row * 8 + col;
+                    let i2 = i1 + 1;
+                    let i3 = i1 + 2;
+                    let i4 = i1 + 3;
+
+                    let c1 = board[i1], c2 = board[i2], c3 = board[i3], c4 = board[i4];
+
+                    // 條件 2 & 3：Lv.6 且順序必須是 玟星(moon) -> 頌樂(solar) -> 輝人(whee) -> 華莎(hwa)
+                    if (
+                        c1 && c1.type === 'member' && c1.char === 'moon' && c1.level === 6 &&
+                        c2 && c2.type === 'member' && c2.char === 'solar' && c2.level === 6 &&
+                        c3 && c3.type === 'member' && c3.char === 'whee' && c3.level === 6 &&
+                        c4 && c4.type === 'member' && c4.char === 'hwa' && c4.level === 6
+                    ) {
+                        isPatternFound = true;
+                        break;
+                    }
+                }
+                if (isPatternFound) break;
+            }
+
+            // 條件達成，且目前沒有正在播放中
+            if (isPatternFound && !isWillContinuePlaying) {
+                isWillContinuePlaying = true; // 鎖上開關
+        
+                // 🌟 隨機選擇音效與對應的字幕提示
+                const easterEggs = [
+                    { 
+                        file: 'audios/mamamoo_will_continue.mp3', 
+                        msg: '✨ MAMAMOO 會繼續！ ✨' 
+                    },
+                    { 
+                        file: 'audios/we_are_mememoo.mp3', // 依照你指定的檔名 
+                        msg: '✨ 我們是 咩咩木！ ✨' 
+                    }
+                ];
+        
+                // 隨機抽 0 還是 1
+                const pick = Math.floor(Math.random() * easterEggs.length);
+                const selectedEgg = easterEggs[pick];
+        
+                // 播放選中的音效
+                let audio = new Audio(selectedEgg.file);
+                audio.play().catch(err => console.log("音效播放被阻擋", err));
+        
+                // 顯示對應的字幕
+                logMsg(selectedEgg.msg);
+        
+            } 
+            // 如果盤面被破壞（玩家把卡片移走），就解鎖開關
+            else if (!isPatternFound) {
+                isWillContinuePlaying = false;
+            }
+        }
+
         function updateBoard() {
             const cells = document.querySelectorAll('.cell');
             cells.forEach((cell, index) => {
@@ -1612,7 +1742,8 @@
                 
                 if (item) {
                     if (item.type === 'member') {
-                        cell.innerHTML = `<img src="images/board/${item.char}_${item.level}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
+                        let suffix = currentSkin === '2' ? '_2' : '';
+                        cell.innerHTML = `<img src="images/board/${item.char}_${item.level}${suffix}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
                     } else if (item.type === 'cp') {
                         let cpName = getCpImageName(item.char1, item.char2);
                         cell.innerHTML = `<img src="images/board/cp_${cpName}.jpg" onerror="this.src='';this.alt='CP'">`;
@@ -1651,6 +1782,7 @@
             }
             updateTaskUI(); 
             updateAutoButtonUI(); 
+            checkSkin2EasterEgg();
             saveLocalData(); 
         }
 
@@ -1676,7 +1808,8 @@
                 if (task.char === 'cp') {
                     iconHtml = `<div style="width:40px; height:40px; display:flex; justify-content:center; align-items:center; background:#e1bee7; border-radius:6px; margin-right:10px; border:2px dashed #9c27b0; font-size:12px; font-weight:bold; color:#4a148c; flex-shrink:0;">CP</div>`;
                 } else {
-                    iconHtml = `<img src="images/board/${task.char}_${task.targetLevel}.jpg" style="width:40px; height:40px; object-fit:cover; border-radius:6px; margin-right:10px; background:#fff; flex-shrink:0; box-shadow:0 1px 3px rgba(0,0,0,0.2);" onerror="this.src='';this.alt='圖'">`;
+                    let suffix = currentSkin === '2' ? '_2' : '';
+                    iconHtml = `<img src="images/board/${task.char}_${task.targetLevel}${suffix}.jpg" style="width:40px; height:40px; object-fit:cover; border-radius:6px; margin-right:10px; background:#fff; flex-shrink:0; box-shadow:0 1px 3px rgba(0,0,0,0.2);" onerror="this.src='';this.alt='圖'">`;
                 }
 
                 let textContent = `
@@ -2086,7 +2219,8 @@
             for (let i = 1; i <= 12; i++) {
                 const box = document.createElement('div');
                 box.className = `evo-cell`;
-                box.innerHTML = `<img src="images/board/${item.char}_${i}.jpg" onerror="this.src='';this.alt='Lv.${i}'">`;
+                let suffix = currentSkin === '2' ? '_2' : '';
+                box.innerHTML = `<img src="images/board/${item.char}_${i}${suffix}.jpg" onerror="this.src='';this.alt='Lv.${i}'">`;
                 grid.appendChild(box);
             }
             document.getElementById('evo-modal').style.display = 'flex';
@@ -2411,7 +2545,10 @@
                 cell.style.display = 'flex';
                 
                 if (item) {
-                    if (item.type === 'member') cell.innerHTML = `<img src="images/board/${item.char}_${item.level}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
+                    if (item.type === 'member') {
+                        let suffix = currentSkin === '2' ? '_2' : '';
+                        cell.innerHTML = `<img src="images/board/${item.char}_${item.level}${suffix}.jpg" onerror="this.src='';this.alt='找不到圖'">`;
+                    }
                     else if (item.type === 'cp') {
                         let cpName = getCpImageName(item.char1, item.char2);
                         cell.innerHTML = `<img src="images/board/cp_${cpName}.jpg" onerror="this.src='';this.alt='CP'">`;
@@ -2532,6 +2669,9 @@
             setInterval(updateAutoButtonUI, 1000);
 
             checkAndClaimCompensation();
+
+            const skinBtn = document.getElementById('btn-toggle-skin');
+            if (skinBtn) skinBtn.innerText = `👗 切換造型 (目前: ${currentSkin === '1' ? '預設' : '造型2'})`;
             
             if (hasSave) logMsg("✅ 已自動為您讀取上次遊玩進度！");
         };
