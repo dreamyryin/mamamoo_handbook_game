@@ -702,7 +702,7 @@
                         <!-- 🌟 5 張全部都是相同大小的 2x2 正方形網格 (每排 2 個) -->
                         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 10px; justify-items: center;">
                             <div class="epic-slot" data-card="final_mamamoo" ondragover="allowDrop(event)" ondrop="dropEpicCard(event, 'final_mamamoo')" style="width: 70px; height: 70px; border: 2px dashed #aaa; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #ccc; background: #333; position: relative; overflow: hidden;">家族卡</div>
-                            <div class="epic-slot" data-card="mamamoo_plus" ondragover="allowDrop(event)" ondrop="dropEpicCard(event, 'mamamoo_plus')" style="width: 70px; height: 70px; border: 2px dashed #aaa; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #ccc; background: #333; position: relative; overflow: hidden;">M+</div>
+                            <div class="epic-slot" data-card="mamamoo_plus" ondragover="allowDrop(event)" ondrop="dropEpicCard(event, 'mamamoo_plus')" style="width: 70px; height: 70px; border: 2px dashed #aaa; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #ccc; background: #333; position: relative; overflow: hidden;">Mamamoo+</div>
                             <div class="epic-slot" data-card="seventeen_card" ondragover="allowDrop(event)" ondrop="dropEpicCard(event, 'seventeen_card')" style="width: 70px; height: 70px; border: 2px dashed #aaa; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #ccc; background: #333; position: relative; overflow: hidden;">17</div>
                             <div class="epic-slot" data-card="first_win" ondragover="allowDrop(event)" ondrop="dropEpicCard(event, 'first_win')" style="width: 70px; height: 70px; border: 2px dashed #aaa; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #ccc; background: #333; position: relative; overflow: hidden;">初一位</div>
                             <!-- 第五張未知卡獨立置中排在下方，尺寸一樣是 70x70 正方形 -->
@@ -1426,12 +1426,24 @@
                     }
                 }
                 
-                // 🌟 讀取史詩召喚狀態
+                // 🌟 讀取史詩召喚狀態並加入防呆檢查
                 let epicSave = localStorage.getItem('mamamoo_epic_save');
                 if (epicSave) {
-                    let parsedEpic = JSON.parse(epicSave);
-                    epicSummonUnlocked = parsedEpic.unlocked || false;
-                    epicSubmittedCards = parsedEpic.cards || epicSubmittedCards;
+                    try {
+                        let parsedEpic = JSON.parse(epicSave);
+                        epicSummonUnlocked = parsedEpic.unlocked || false;
+                        epicSubmittedCards = parsedEpic.cards || epicSubmittedCards;
+                        
+                        // 🛡️ 安全防護：如果等級不到 300 級，絕對不准處於解鎖狀態！
+                        if (currentLevel < 300 && epicSummonUnlocked) {
+                            epicSummonUnlocked = false;
+                            isEpicSpawnChecked = false;
+                            epicSubmittedCards = { final_mamamoo: false, mamamoo_plus: false, seventeen_card: false, first_win: false, unknown_epic: false };
+                            console.log("🛡️ 已自動攔截並修正未滿 300 級卻異常解鎖的史詩召喚狀態");
+                        }
+                    } catch(e) {
+                        epicSummonUnlocked = false;
+                    }
                     
                     // 恢復已提交的卡片畫面
                     for (let key in epicSubmittedCards) {
@@ -2054,7 +2066,7 @@
                     }
 
                     // 🌟 統一價格設定 (例如統一為 5000 金幣，你可以自己改數字)
-                    const uniformPrice = 5000;
+                    const uniformPrice = 10000;
 
                     let confirmSell = confirm(`⚠️ 警告！你即將出售【${itemName}】！\n售出可獲得 ${uniformPrice} 💰，確定要賣掉嗎？`);
                     if (!confirmSell) {
@@ -2211,24 +2223,29 @@
                     board[srcIdx] = null; 
                     logMsg("🎉 合成出 MAMAMOO 完全體 (家族卡)！"); 
                 } 
-                else if (srcItem.char1 === targetItem.char1 && srcItem.char2 === targetItem.char2) {
-                    let cpPair = [srcItem.char1, srcItem.char2].sort().join('_');
-                    if (cpPair === 'moon_solar') {
-                        board[targetIdx] = { type: 'epic', id: 'mamamoo_plus' }; 
-                        board[srcIdx] = null; 
-                        logMsg(`🎉 解鎖史詩卡片：Mamamoo+！`);
-                    } else if (cpPair === 'hwa_whee') {
-                        board[targetIdx] = { type: 'epic', id: 'seventeen_card' }; 
-                        board[srcIdx] = null; 
-                        logMsg(`🎉 解鎖史詩卡片：17！`);
+                else {
+                    // 🌟 修正：不論順序如何（例如 hwa_whee 或 whee_hwa），都先排序後再組合成標準字串比對
+                    let pairA = [srcItem.char1, srcItem.char2].sort().join('_');
+                    let pairB = [targetItem.char1, targetItem.char2].sort().join('_');
+
+                    // 檢查兩張 CP 卡是否完全相同
+                    if (pairA === pairB) {
+                        if (pairA === 'moon_solar') {
+                            board[targetIdx] = { type: 'epic', id: 'mamamoo_plus' }; 
+                            board[srcIdx] = null; 
+                            logMsg(`🎉 解鎖史詩卡片：Mamamoo+！`);
+                        } else if (pairA === 'hwa_whee') { // 確保對應正確的 key
+                            board[targetIdx] = { type: 'epic', id: 'seventeen_card' }; 
+                            board[srcIdx] = null; 
+                            logMsg(`🎉 解鎖史詩卡片：17！`);
+                        } else {
+                            logMsg("這兩張 CP 無法產生特殊史詩卡！"); 
+                        }
                     } else {
-                        logMsg("這兩張 CP 無法產生特殊史詩卡！"); 
+                        logMsg("CP 角色不相符，無法合成！");
                     }
-                } 
-                else { 
-                    logMsg("CP 角色重複！無法合成完全體！"); 
                 }
-            } 
+            }
             else if (srcItem.type === 'final' && targetItem.type === 'final') {
                 board[targetIdx] = { type: 'epic', id: 'unknown_epic' };
                 board[srcIdx] = null;
@@ -2974,8 +2991,11 @@
             let container = document.getElementById('epic-summon-container');
             if (!container) return;
             
+            // 必須等級達到 300 級（或者你之後想用其他方式判定），才會讓這個區塊出現
             if (currentLevel >= 300 || epicSummonUnlocked) {
                 container.style.display = 'block';
+                
+                // 只有當「真正完成 5 張卡片提交解鎖 (`epicSummonUnlocked === true`)」時，才顯示勾選框
                 if (epicSummonUnlocked) {
                     container.innerHTML = `
                         <div style="display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 4px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; border: 1px solid #ccc; box-sizing: border-box;">
@@ -2984,6 +3004,7 @@
                         </div>
                     `;
                 } else {
+                    // 尚未提交完成前，只顯示按鈕，點擊開啟提交面板，絕對不能打勾！
                     container.innerHTML = `
                         <div id="epic-toggle-btn" onclick="toggleEpicSummon()" style="display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 6px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; border: 1px solid #ccc; box-sizing: border-box; cursor: pointer;">
                             <span style="color: #2c3e50;">🌟 史詩召喚</span>
@@ -2992,6 +3013,7 @@
                     `;
                 }
             } else {
+                // 等級小於 300 且未解鎖，直接隱藏
                 container.style.display = 'none';
             }
         }
