@@ -1718,12 +1718,14 @@
             let members = [];
             let cps = [];
             let finals = [];
+            let epics = []; // 🌟 新增：用來收集盤面上的史詩卡
             
             board.forEach(item => {
                 if (!item) return;
                 if (item.type === 'member') members.push(item);
                 else if (item.type === 'cp') cps.push(item);
                 else if (item.type === 'final') finals.push(item);
+                else if (item.type === 'epic') epics.push(item); // 🌟 新增：把史詩卡收進來
             });
 
             const charOrder = { 'solar': 1, 'moon': 2, 'whee': 3, 'hwa': 4 };
@@ -1739,6 +1741,7 @@
             members.forEach(m => board[idx++] = m);
             cps.forEach(c => board[idx++] = c);
             finals.forEach(f => board[idx++] = f);
+            epics.forEach(e => board[idx++] = e); // 🌟 新增：排在最後面放回盤面
 
             updateBoard();
             logMsg("🧹 盤面已自動為您整理！");
