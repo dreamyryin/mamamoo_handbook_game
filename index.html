@@ -171,16 +171,14 @@
                 const docSnap = await getDoc(docRef);
 
                 if (docSnap.exists()) {
+                    // 🌟 狀況 A：雲端有這個帳號的存檔，直接下載覆蓋本地
                     const data = docSnap.data();
                     if (data.saveData) {
                         localStorage.setItem('mamamoo_save', data.saveData);
                     }
-                    
-                    // 🌟 這裡！把雲端的圖鑑拉下來，塞回 LocalStorage！
                     if (data.galleryData) {
                         localStorage.setItem('mamamoo_gallery', data.galleryData);
                     }
-                    
                     if (data.playerCreatedAt) {
                         localStorage.setItem('player_created_at', data.playerCreatedAt);
                     }
@@ -194,8 +192,74 @@
                     updateBoard();
                     logMsg("☁️ 成功從雲端同步遊戲與圖鑑進度！");
                 } else {
-                    window.triggerAutoCloudSave();
-                    logMsg("☁️ 已為您在雲端建立全新存檔！");
+                    // 🌟 狀況 B：雲端完全沒有這個帳號的存檔（新帳號或首次登入）
+                    const localSave = localStorage.getItem('mamamoo_save');
+                    
+                    if (localSave) {
+                        // 詢問玩家要把本機進度帶過去，還是要開新局
+                        let uploadChoice = confirm("☁️ 偵測到此 Google 帳號尚無雲端存檔。\n\n[確定] 將目前此裝置的遊戲進度上傳至此 Google 帳號。\n[取消] 清空畫面，以此 Google 帳號開新局。");
+                        
+                        if (uploadChoice) {
+                            window.triggerAutoCloudSave();
+                            logMsg("☁️ 已將本機進度綁定至此新帳號！");
+                        } else {
+                            // 1. 清除所有本機暫存
+                            localStorage.removeItem('mamamoo_save');
+                            localStorage.removeItem('mamamoo_gallery');
+                            localStorage.removeItem('mamamoo_epic_save');
+                            
+                            // 2. 徹底重置所有全域變數
+                            coins = 0;
+                            currentLevel = 1;
+                            tears = 0;
+                            choiceCards = 0;
+                            inventory = { small: 0, large: 0, surprise: 0 };
+                            board = new Array(BOARD_SIZE).fill(null);
+                            memorialBoard = new Array(BOARD_SIZE).fill(null);
+                            isPermanentAutoMerge = false;
+                            autoMergeEndTime = 0;
+                            epicSummonUnlocked = false;
+                            isEpicSpawnChecked = false;
+                            isAdvancedSpawnChecked = false;
+                            claimedSets.clear();
+                            
+                            galleryData = [];
+                            initGalleryData(); 
+                            currentMissionData = generateMissionsForLevel(1);
+                            
+                            // 3. 立即刷新所有介面
+                            updateBoard();
+                            updateShopUI();
+                            updateGalleryUI();
+                            updateMemorialBoard();
+                            
+                            // 4. 強制取消任何殘留的自動存檔計時器，避免覆蓋
+                            if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+
+                            // 5. 立刻把「全新歸零的狀態」寫入雲端（不透過 1.5 秒延遲，直接同步）
+                            try {
+                                const rawSaveStr = localStorage.getItem('mamamoo_save') || "0|0,0,0|0|0|1|||0|0|0||1";
+                                const galStr = localStorage.getItem('mamamoo_gallery') || "";
+                                const customName = localStorage.getItem('mamamoo_nickname') || user.displayName || "匿名木木";
+
+                                await setDoc(doc(db, "game_saves", user.uid), {
+                                    saveData: rawSaveStr,
+                                    galleryData: galStr,
+                                    playerCreatedAt: localStorage.getItem('player_created_at') || String(Date.now()),
+                                    updatedAt: Date.now(),
+                                    level: 1,
+                                    coins: 0,
+                                    displayName: customName
+                                });
+                                logMsg("☁️ 已為您在此帳號建立全新存檔！");
+                            } catch (e) {
+                                console.error("New save sync failed", e);
+                            }
+                        }
+                    } else {
+                        window.triggerAutoCloudSave();
+                        logMsg("☁️ 已為您在雲端建立全新存檔！");
+                    }
                 }
             } catch (e) {
                 console.error("Cloud load failed", e);
