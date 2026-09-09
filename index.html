@@ -2196,7 +2196,7 @@
             const dropMemorial = elements.find(el => el.id === 'btn-memorial');
             if (dropMemorial && dragSourceIdx !== -1) {
                 const item = board[dragSourceIdx];
-                if (item && (item.type === 'member' || item.type === 'cp' || item.type === 'final')) {
+                if (item && (item.type === 'member' || item.type === 'cp' || item.type === 'final' || item.type === 'epic' )) {
                     let emptyMemIdx = memorialBoard.findIndex(x => !x);
                     if (emptyMemIdx === -1) {
                         logMsg("❌ 紀念冊已經滿了！");
